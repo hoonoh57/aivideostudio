@@ -1,0 +1,15 @@
+[project]
+name = "aivideostudio"
+version = "0.1.0"
+description = "AI-powered video production studio"
+requires-python = ">=3.12"
+dependencies = [
+    "PyQt6>=6.7",
+    "ffmpeg-python>=0.2.0",
+    "loguru>=0.7",
+    "appdirs>=1.4",
+    "psutil>=5.9",
+]
+
+[project.scripts]
+avs = "aivideostudio.main:main"

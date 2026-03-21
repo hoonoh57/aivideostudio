@@ -1,0 +1,15 @@
+QMainWindow { background-color: #1e1e1e; }
+QWidget { background-color: #252526; color: #cccccc; font-family: "Malgun Gothic", "Segoe UI"; font-size: 13px; }
+QMenuBar { background-color: #333333; color: #cccccc; border-bottom: 1px solid #444; }
+QMenuBar::item:selected { background-color: #094771; }
+QMenu { background-color: #2d2d30; border: 1px solid #444; }
+QMenu::item:selected { background-color: #094771; }
+QToolBar { background-color: #2d2d30; border: none; spacing: 4px; padding: 2px; }
+QToolBar QToolButton { background: transparent; color: #ccc; padding: 6px 10px; border-radius: 4px; }
+QToolBar QToolButton:hover { background-color: #3e3e42; }
+QDockWidget { color: #cccccc; }
+QDockWidget::title { background-color: #333; padding: 6px; border-bottom: 1px solid #094771; }
+QStatusBar { background-color: #007acc; color: white; }
+QLabel { background: transparent; }
+QPushButton { background-color: #0e639c; color: white; border: none; padding: 6px 16px; border-radius: 4px; }
+QPushButton:hover { background-color: #1177bb; }
