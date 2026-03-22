@@ -24,6 +24,7 @@ PIXELS_PER_SECOND = 100
 SNAP_THRESHOLD = 8
 MIN_CLIP_WIDTH = 10
 HANDLE_WIDTH = 6
+FRAME_DURATION = 1.0 / 30.0  # ~0.0333s per frame at 30fps
 
 CLR_BG = QColor(30, 30, 30)
 CLR_TRACK = QColor(45, 45, 50)
@@ -839,7 +840,9 @@ class TimelineCanvas(QWidget):
             self.seek_requested.emit(-1.0)  # special signal: -1 = toggle play
             event.accept()
         elif event.key() == Qt.Key.Key_Left:
-            step = 1.0 if not event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 0.1
+            # 1 frame step (Shift = 10 frames)
+            frames = 10 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1
+            step = FRAME_DURATION * frames
             new_t = max(0, self._playhead - step)
             self._playhead = new_t
             self.playhead_moved.emit(self._playhead)
@@ -847,7 +850,9 @@ class TimelineCanvas(QWidget):
             self.update()
             event.accept()
         elif event.key() == Qt.Key.Key_Right:
-            step = 1.0 if not event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 0.1
+            # 1 frame step (Shift = 10 frames)
+            frames = 10 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1
+            step = FRAME_DURATION * frames
             new_t = min(self._total_duration, self._playhead + step)
             self._playhead = new_t
             self.playhead_moved.emit(self._playhead)

@@ -611,6 +611,33 @@ class PreviewPanel(QWidget):
     def load(self, path):
         self.load_media(path)
 
+    def frame_step(self, direction=1):
+        """Step exactly 1 frame forward (+1) or backward (-1) using mpv."""
+        if not self._engine:
+            return
+        self._ensure_player()
+        if self._playing:
+            self.pause()
+        # Use mpv frame-step for precise single frame
+        try:
+            if direction > 0:
+                self._player.command("frame-step")
+            else:
+                self._player.command("frame-back-step")
+        except Exception:
+            pass
+        # Update timeline position
+        try:
+            pos = self._player.time_pos
+            if pos is not None and self._active_clip:
+                clip = self._active_clip
+                tl_now = clip["timeline_start"] + (float(pos) - clip.get("in_point", 0))
+                self._engine.playhead = tl_now
+                self._update_subtitle_overlay(tl_now)
+                self._update_ui(tl_now)
+        except Exception:
+            pass
+
     def closeEvent(self, event):
         self._timer.stop()
         for p in (self._player, self._audio_player):
