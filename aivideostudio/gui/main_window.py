@@ -23,6 +23,7 @@ from aivideostudio.gui.panels.inspector_panel import InspectorPanel
 from aivideostudio.gui.panels.subtitle_panel import SubtitlePanel
 from aivideostudio.gui.panels.tts_panel import TTSPanel
 from aivideostudio.gui.panels.export_panel import ExportPanel
+from aivideostudio.core.playback_engine import TimelinePlaybackEngine
 
 
 class ThumbnailWorker(QThread):
@@ -42,6 +43,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config = config
         self.undo_manager = UndoManager()
+        self.playback_engine = TimelinePlaybackEngine()
+        self.playback_engine = TimelinePlaybackEngine()
         self.project = Project()
         self.thumb_engine = ThumbnailEngine(config.ffmpeg_path)
         self.subtitle_engine = SubtitleEngine(config.ffmpeg_path)
@@ -113,9 +116,11 @@ class MainWindow(QMainWindow):
         self.timeline_panel.add_track("Video 1", "video")
         self.timeline_panel.add_track("Audio 1", "audio")
         self.timeline_panel.set_undo_manager(self.undo_manager)
+        self.preview.set_engine(self.playback_engine)
 
     def _connect_signals(self):
         self.timeline_panel.seek_requested.connect(self._on_timeline_seek)
+        self.preview.position_changed.connect(self._on_preview_position)
 
 
         self.asset_panel.file_imported.connect(self._on_file_imported)
@@ -133,11 +138,13 @@ class MainWindow(QMainWindow):
         if self.undo_manager.undo():
             name = self.undo_manager.redo_name()
             self.status_bar.showMessage("Undo: " + name, 3000)
+            self._sync_timeline_to_preview()
 
     def _do_redo(self):
         if self.undo_manager.redo():
             name = self.undo_manager.undo_name()
             self.status_bar.showMessage("Redo: " + name, 3000)
+            self._sync_timeline_to_preview()
 
     def _delete_selected_clip(self):
         pass  # removed old Command pattern
@@ -185,6 +192,10 @@ class MainWindow(QMainWindow):
             "track": 0,
         }
         self.timeline_panel.add_clip(0, clip_dict)
+        self._sync_timeline_to_preview()
+        self.preview.seek_to(0.0)
+        self._sync_timeline_to_preview()
+        self.preview.seek_to(0.0)
 
     def _on_thumb(self, fp, tp):
         self.asset_panel.set_thumbnail(fp, tp)
@@ -209,6 +220,8 @@ class MainWindow(QMainWindow):
             self._current_video = path
             self.subtitle_panel.set_video_path(path)
             self.export_panel.set_input(path, clip_data.get("duration", 0.0))
+        self._sync_timeline_to_preview()
+        self._sync_timeline_to_preview()
 
     def _on_subtitle_ready(self, path):
         self.export_panel.set_subtitle(path)
@@ -230,11 +243,35 @@ class MainWindow(QMainWindow):
 
     def _on_timeline_seek(self, time_sec):
         """Seek preview to timeline position."""
-        try:
-            pos_ms = int(time_sec * 1000)
-            self.preview.player.setPosition(pos_ms)
-        except Exception as e:
-            logger.warning("Seek failed: " + str(e))
+        self._sync_timeline_to_preview()
+        self.preview.seek_to(time_sec)
+
+    def _sync_timeline_to_preview(self):
+        """Sync timeline data to playback engine."""
+        tracks_data = []
+        for track in self.timeline_panel.canvas.tracks:
+            clips = []
+            for cw in track["clips"]:
+                try:
+                    if cw._alive:
+                        clips.append(dict(cw.clip_data))
+                except (RuntimeError, AttributeError):
+                    continue
+            tracks_data.append({
+                "name": track["name"],
+                "type": track["type"],
+                "clips": clips,
+            })
+        self.playback_engine.set_tracks(tracks_data)
+
+    def _on_preview_position(self, time_sec):
+        """Update timeline playhead from preview position."""
+        self.timeline_panel.canvas._playhead = time_sec
+        self.timeline_panel.canvas.update()
+        m, s = divmod(time_sec, 60)
+        self.timeline_panel.lbl_time.setText(
+            str(int(m)) + ":" + "{:05.2f}".format(s))
+        self.playback_engine.playhead = time_sec
 
     def closeEvent(self, e):
         s = QSettings("AVS", "AIVideoStudio")

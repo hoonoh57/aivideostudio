@@ -22,4 +22,4 @@ setup_*.py
 setup_files.py
 todo.txt
 subtitle.srt
-scripts/
+scripts/libmpv-2.dll 
