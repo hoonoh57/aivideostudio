@@ -123,7 +123,7 @@ class MainWindow(QMainWindow):
 
 
         self.asset_panel.file_imported.connect(self._on_file_imported)
-        self.asset_panel.file_double_clicked.connect(self._on_file_preview)
+        self.asset_panel.file_double_clicked.connect(self.add_asset_to_timeline)
         self.timeline_panel.clip_selected.connect(self._on_clip_selected)
         self.subtitle_panel.subtitle_ready.connect(self._on_subtitle_ready)
         self.tts_panel.audio_ready.connect(self._on_tts_ready)
@@ -178,21 +178,101 @@ class MainWindow(QMainWindow):
             self._workers.append(w)
             w.start()
 
+        # Preview the imported file (source preview, not timeline)
+        self.preview.load(file_path)
+
+
+    def add_asset_to_timeline(self, file_path):
+        """Add an asset from media panel to timeline at the end of track 0."""
+        # Find asset info
+        asset = None
+        for a in self.project.assets:
+            if a.path == file_path:
+                asset = a
+                break
+        if not asset:
+            return
+
+        # Find end of existing clips on track 0
+        end_time = 0.0
+        for cw in self.timeline_panel.canvas.tracks[0]["clips"]:
+            try:
+                if cw._alive:
+                    ce = cw.clip_data.get("timeline_start", 0) + cw.clip_data.get("duration", 0)
+                    if ce > end_time:
+                        end_time = ce
+            except (RuntimeError, AttributeError):
+                pass
+
         clip = Clip(asset_path=file_path, track_index=0,
-                    source_in=0.0, source_out=info.duration, name=asset.name)
+                    source_in=0.0, source_out=asset.duration, name=asset.name)
         self.project.add_clip(clip)
         clip_dict = {
             "name": asset.name,
             "path": file_path,
-            "timeline_start": 0.0,
-            "duration": info.duration,
+            "timeline_start": end_time,
+            "duration": asset.duration,
             "in_point": 0.0,
-            "out_point": info.duration,
+            "out_point": asset.duration,
             "track": 0,
         }
         self.timeline_panel.add_clip(0, clip_dict)
         self._sync_timeline_to_preview()
-        self.preview.seek_to(0.0)
+        self.preview.seek_to(end_time)
+        self.status_bar.showMessage(
+            f"Added to timeline: {asset.name} at {end_time:.1f}s", 3000)
+
+
+    def add_asset_to_timeline(self, file_path):
+        """Double-click in media panel: add asset to timeline at end of track 0."""
+        # Find the asset
+        asset = None
+        for a in self.project.assets:
+            if a.path == file_path:
+                asset = a
+                break
+        if asset is None:
+            # Not yet imported — import first
+            self._on_file_imported(file_path)
+            for a in self.project.assets:
+                if a.path == file_path:
+                    asset = a
+                    break
+        if asset is None:
+            self.status_bar.showMessage(f"Cannot add: {Path(file_path).name}", 5000)
+            return
+
+        duration = asset.duration if asset.duration > 0 else 5.0
+
+        # Find end of existing clips on track 0
+        end_time = 0.0
+        if self.timeline_panel.canvas.tracks:
+            for cw in self.timeline_panel.canvas.tracks[0]["clips"]:
+                try:
+                    if cw._alive:
+                        cend = cw.clip_data.get("timeline_start", 0) + cw.clip_data.get("duration", 0)
+                        end_time = max(end_time, cend)
+                except (RuntimeError, AttributeError):
+                    continue
+
+        clip = Clip(asset_path=file_path, track_index=0,
+                    source_in=0.0, source_out=duration, name=asset.name)
+        self.project.add_clip(clip)
+
+        clip_dict = {
+            "name": asset.name,
+            "path": file_path,
+            "timeline_start": end_time,
+            "duration": duration,
+            "in_point": 0.0,
+            "out_point": duration,
+            "track": 0,
+        }
+        self.timeline_panel.add_clip(0, clip_dict)
+        self._sync_timeline_to_preview()
+        self.preview.seek_to(end_time)
+        self.status_bar.showMessage(
+            f"Added to timeline: {asset.name} at {end_time:.1f}s", 3000)
 
     def _on_thumb(self, fp, tp):
         self.asset_panel.set_thumbnail(fp, tp)

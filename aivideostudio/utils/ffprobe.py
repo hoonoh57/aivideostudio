@@ -20,9 +20,10 @@ def probe(file_path, ffprobe_path="ffprobe"):
     cmd = [ffprobe_path, "-v", "quiet", "-print_format", "json",
            "-show_format", "-show_streams", str(file_path)]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=30, creationflags=0x08000000)
-        data = json.loads(r.stdout)
+        r = subprocess.run(cmd, capture_output=True, timeout=30,
+                           creationflags=0x08000000)
+        stdout = r.stdout.decode("utf-8", errors="replace")
+        data = json.loads(stdout)
     except Exception as e:
         logger.error(f"ffprobe failed: {e}")
         return None

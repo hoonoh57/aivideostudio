@@ -42,7 +42,15 @@ class PreviewPanel(QWidget):
         self._file_loaded = False
         self._pending_seek = None
         self._slider_dragging = False
+        self._image_playing = False   # True when playing an image clip
         self._build_ui()
+
+    @staticmethod
+    def _is_image(path: str) -> bool:
+        """Check if a file is an image (not video)."""
+        ext = _Path(path).suffix.lower()
+        return ext in (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff",
+                        ".tif", ".webp", ".svg")
 
     # ── UI ──────────────────────────────────────────────────────
     def _build_ui(self):
@@ -186,6 +194,7 @@ class PreviewPanel(QWidget):
         self._playing = False
         self._btn_play.setText("Play")
         self._gap_playing = False
+        self._image_playing = False
         self._timer.stop()
         if self._player:
             try:
@@ -207,13 +216,19 @@ class PreviewPanel(QWidget):
         t = self._engine.playhead
         clip = self._engine.clip_at(t)
         if clip:
-            src_time = clip.get("in_point", 0) + (t - clip["timeline_start"])
-            self._load_file(clip["path"], src_time, pause=True)
+            path = clip.get("path", "")
+            if self._is_image(path):
+                self._load_file(path, 0.0, pause=True)
+            else:
+                src_time = clip.get("in_point", 0) + (t - clip["timeline_start"])
+                self._load_file(path, src_time, pause=True)
             self._active_clip = clip
             self._gap_playing = False
+            self._image_playing = False
         else:
             self._active_clip = None
             self._gap_playing = False
+            self._image_playing = False
             if self._player:
                 try:
                     self._player.pause = True
@@ -225,6 +240,17 @@ class PreviewPanel(QWidget):
         """Begin playing a clip from the correct source position."""
         self._active_clip = clip
         self._gap_playing = False
+        self._image_playing = False
+        path = clip.get("path", "")
+
+        if self._is_image(path):
+            # Image clip: load image in mpv (paused), advance by wall-clock
+            self._image_playing = True
+            self._play_start_real = _time.time()
+            self._play_start_tl = self._engine.playhead
+            self._load_file(path, 0.0, pause=True)
+            return
+
         src_time = clip.get("in_point", 0) + (self._engine.playhead
                                         - clip["timeline_start"])
         self._load_file(clip["path"], src_time, pause=False)
@@ -249,6 +275,29 @@ class PreviewPanel(QWidget):
     # ── tick (30 fps timer) ─────────────────────────────────────
     def _tick(self):
         if not self._playing or not self._engine:
+            return
+
+        # ── image clip: wall-clock based, mpv shows still image ──
+        if self._image_playing and self._active_clip:
+            elapsed = _time.time() - self._play_start_real
+            tl_now = self._play_start_tl + elapsed
+            clip = self._active_clip
+            clip_end_tl = clip["timeline_start"] + clip["duration"]
+
+            if tl_now >= clip_end_tl - 0.05:
+                # image clip finished
+                self._engine.playhead = clip_end_tl
+                self._image_playing = False
+                next_clip = self._engine.clip_at(clip_end_tl)
+                if next_clip and next_clip is not clip:
+                    self._start_clip(next_clip)
+                elif self._engine.duration > 0 and clip_end_tl >= self._engine.duration:
+                    self.pause()
+                else:
+                    self._start_gap()
+            else:
+                self._engine.playhead = tl_now
+            self._update_ui(self._engine.playhead)
             return
 
         if self._gap_playing:
