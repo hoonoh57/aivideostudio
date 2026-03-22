@@ -123,20 +123,10 @@ class PreviewPanel(QWidget):
             self._file_loaded = True
             if self._pending_seek is not None:
                 try:
-                    self._seek_cmd_time = _time.time()
                     self._player.time_pos = self._pending_seek
                 except Exception as e:
                     logger.warning(f"pending seek failed: {e}")
                 self._pending_seek = None
-
-        self._seek_cmd_time = 0.0
-
-        @self._player.event_callback("seek")
-        def _on_seek_done(evt):
-            if self._seek_cmd_time > 0:
-                delay = _time.time() - self._seek_cmd_time
-                logger.info(f"RENDER: seek event fired, delay={delay:.3f}s")
-                self._seek_cmd_time = 0.0
 
         logger.info(f"mpv player created (wid={wid})")
 
@@ -172,7 +162,6 @@ class PreviewPanel(QWidget):
     def _do_seek(self, sec: float, exact: bool = False):
         """Seek within current file using seek command."""
         try:
-            self._seek_cmd_time = _time.time()
             self._player.command("seek", str(sec), "absolute", "exact")
         except Exception as e:
             logger.warning(f"seek failed: {e}")
@@ -216,16 +205,10 @@ class PreviewPanel(QWidget):
         if not self._engine:
             return
         t = self._engine.playhead
-        _t0 = _time.time()
         clip = self._engine.clip_at(t)
         if clip:
             src_time = clip.get("in_point", 0) + (t - clip["timeline_start"])
-            logger.info(f"SEEK: tl={t:.2f} src={src_time:.2f} loaded={self._loaded_path} clip_path={clip['path']}")
             self._load_file(clip["path"], src_time, pause=True)
-            try:
-                logger.info(f"SEEK: done in {_time.time()-_t0:.3f}s, mpv_pause={self._player.pause}, mpv_pos={self._player.time_pos}")
-            except:
-                logger.info(f"SEEK: done in {_time.time()-_t0:.3f}s")
             self._active_clip = clip
             self._gap_playing = False
         else:
