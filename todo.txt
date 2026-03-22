@@ -194,14 +194,17 @@
 - [ ] pause→play 재개 시 현재 위치 유지 확인
 - [ ] 서버 동기화 (git push)
 
-### NEXT-2: Export 완성 (최우선 기능)
-- [ ] 타임라인 배치대로 FFmpeg 커맨드 생성
-- [ ] 단일 클립 Export (트림 적용)
-- [ ] 멀티 클립 Export (concat/overlay)
-- [ ] 이미지 클립 → 동영상 변환 포함
-- [ ] 진행률 표시 + 취소
-- [ ] GPU 인코딩 (h264_nvenc)
-- [ ] Export 프리셋 (YouTube 1080p, 4K, Shorts, 커스텀)
+### NEXT-2: Export 완성 ✅ 완료 (v0.3.9)
+- [x] 타임라인 배치대로 FFmpeg 커맨드 생성
+- [x] 단일 클립 Export (트림 적용)
+- [x] 멀티 클립 Export (concat)
+- [x] 이미지 클립 → 동영상 변환 포함
+- [x] Gap → 검은 화면 삽입
+- [x] 자막 번인 (burn subtitles)
+- [x] GPU 인코딩 옵션 (NVENC)
+- [x] Export 프리셋 (YouTube 1080p/4K, Shorts, TikTok, Fast Preview)
+- [ ] 진행률 실시간 표시 (현재 세그먼트 단위)
+- [ ] 취소 기능 검증
 
 ### NEXT-3: 프로젝트 저장/열기
 - [ ] JSON 기반 .avs 파일 저장
