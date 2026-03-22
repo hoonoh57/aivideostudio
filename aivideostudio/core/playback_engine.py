@@ -50,11 +50,13 @@ class TimelinePlaybackEngine:
 
     def query(self, t):
         """Query what should be displayed at timeline time t.
+        Respects track enabled/mute flags.
         
         Returns:
             {
-                "video": {"path": str, "source_time": float, "clip": dict} or None,
-                "audio": [{"path": str, "source_time": float, "clip": dict}, ...],
+                "video": info or None,
+                "audio": [info, ...],
+                "subtitle": [info, ...],
                 "timeline_pos": float,
                 "is_gap": bool,
             }
@@ -62,12 +64,17 @@ class TimelinePlaybackEngine:
         result = {
             "video": None,
             "audio": [],
+            "subtitle": [],
             "timeline_pos": t,
             "is_gap": True,
         }
 
         for track in self._tracks:
+            # Skip disabled tracks
+            if not track.get("enabled", True):
+                continue
             track_type = track.get("type", "video")
+            is_muted = track.get("mute", False)
             for clip in track.get("clips", []):
                 cs = clip.get("timeline_start", 0)
                 ce = cs + clip.get("duration", 0)
@@ -80,11 +87,16 @@ class TimelinePlaybackEngine:
                         "clip": clip,
                     }
                     if track_type == "video":
-                        # Higher track overwrites (last found wins)
-                        result["video"] = info
+                        if not is_muted:
+                            result["video"] = info
                         result["is_gap"] = False
                     elif track_type == "audio":
-                        result["audio"].append(info)
+                        if not is_muted:
+                            result["audio"].append(info)
+                        result["is_gap"] = False
+                    elif track_type == "subtitle":
+                        if not is_muted:
+                            result["subtitle"].append(info)
                         result["is_gap"] = False
 
         return result
@@ -146,6 +158,38 @@ class TimelinePlaybackEngine:
         segments = []
         for track in self._tracks:
             if track.get("type") != "audio":
+                continue
+            for clip in track.get("clips", []):
+                cs = clip.get("timeline_start", 0)
+                dur = clip.get("duration", 0)
+                segments.append({
+                    "timeline_start": cs,
+                    "timeline_end": cs + dur,
+                    "path": clip.get("path", ""),
+                    "in_point": clip.get("in_point", 0),
+                    "out_point": clip.get("out_point", clip.get("in_point", 0) + dur),
+                })
+        segments.sort(key=lambda s: s["timeline_start"])
+        return segments
+
+    def find_next_any_time(self, after_t):
+        """Find the start time of the next clip (video or audio) after time t."""
+        best = None
+        for track in self._tracks:
+            for clip in track.get("clips", []):
+                cs = clip.get("timeline_start", 0)
+                if cs > after_t + 0.01:
+                    if best is None or cs < best:
+                        best = cs
+        return best
+
+    def get_ordered_subtitle_segments(self):
+        """Return all subtitle segments sorted by timeline_start."""
+        segments = []
+        for track in self._tracks:
+            if track.get("type") != "subtitle":
+                continue
+            if not track.get("enabled", True):
                 continue
             for clip in track.get("clips", []):
                 cs = clip.get("timeline_start", 0)

@@ -3,8 +3,8 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QFileDialog, QLabel, QAbstractItemView
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QMimeData, QPoint
+from PyQt6.QtGui import QIcon, QPixmap, QDrag
 from loguru import logger
 
 SUPPORTED = {
@@ -16,6 +16,46 @@ SUPPORTED = {
 ALL_EXTS = []
 for v in SUPPORTED.values():
     ALL_EXTS.extend(v)
+
+
+
+
+class DraggableListWidget(QListWidget):
+    """QListWidget that supports dragging file paths to timeline."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self._drag_start_pos = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        if self._drag_start_pos is None:
+            return
+        dist = (event.pos() - self._drag_start_pos).manhattanLength()
+        if dist < 20:
+            return
+        item = self.currentItem()
+        if item is None:
+            return
+        file_path = item.data(Qt.ItemDataRole.UserRole)
+        if not file_path:
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setText(file_path)
+        mime.setData("application/x-aivideo-asset", file_path.encode("utf-8"))
+        drag.setMimeData(mime)
+        # Optional: set drag pixmap from icon
+        icon = item.icon()
+        if not icon.isNull():
+            drag.setPixmap(icon.pixmap(QSize(80, 45)))
+        drag.exec(Qt.DropAction.CopyAction)
 
 
 class AssetPanel(QWidget):
@@ -40,10 +80,9 @@ class AssetPanel(QWidget):
         top.addWidget(self.lbl_count)
         layout.addLayout(top)
 
-        self.list_widget = QListWidget()
+        self.list_widget = DraggableListWidget()
         self.list_widget.setIconSize(QSize(80, 45))
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.list_widget.setDragEnabled(True)
         self.list_widget.doubleClicked.connect(self._on_double_click)
         layout.addWidget(self.list_widget)
 

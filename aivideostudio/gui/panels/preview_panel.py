@@ -1,13 +1,14 @@
-"""Preview Panel — mpv-based, driven by TimelinePlaybackEngine."""
+"""Preview Panel — mpv-based, driven by TimelinePlaybackEngine.
+Supports video + audio track playback + subtitle overlay."""
 import os, sys, time as _time
 from pathlib import Path as _Path
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                               QPushButton, QSlider, QLabel, QSizePolicy)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QFont
 from loguru import logger
 
-# ── Ensure libmpv-2.dll is loadable ────────────────────────────
 _root = str(_Path(__file__).resolve().parents[3])
 _dll = _Path(_root) / "libmpv-2.dll"
 if _dll.exists():
@@ -16,61 +17,84 @@ if _dll.exists():
         os.add_dll_directory(_root)
     except OSError:
         pass
-    # Pre-load so ctypes.find_library succeeds
     import ctypes as _ctypes
     _ctypes.CDLL(str(_dll))
 
 import mpv  # noqa: E402
 
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff",
+               ".tif", ".webp", ".svg"}
+_AUDIO_EXTS = {".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a", ".wma"}
+
 
 class PreviewPanel(QWidget):
-    """Video preview driven by a TimelinePlaybackEngine."""
+    """Video preview with audio track + subtitle overlay."""
 
-    position_changed = pyqtSignal(float)   # emits timeline seconds
+    position_changed = pyqtSignal(float)
 
-    # ── construction ────────────────────────────────────────────
     def __init__(self, parent=None):
         super().__init__(parent)
         self._engine = None
         self._player = None
+        self._audio_player = None
         self._playing = False
-        self._active_clip = None        # dict from engine
-        self._loaded_path = None        # currently loaded file
+        self._active_clip = None
+        self._active_audio = None
+        self._loaded_path = None
+        self._audio_loaded_path = None
         self._gap_playing = False
         self._play_start_real = 0.0
         self._play_start_tl = 0.0
         self._file_loaded = False
         self._pending_seek = None
         self._slider_dragging = False
-        self._image_playing = False   # True when playing an image clip
+        self._image_playing = False
+        self._sync_callback = None
+        # Subtitle data: list of {"start": float, "end": float, "text": str}
+        self._subtitle_events = []
+        self._current_sub_text = ""
         self._build_ui()
 
     @staticmethod
     def _is_image(path: str) -> bool:
-        """Check if a file is an image (not video)."""
-        ext = _Path(path).suffix.lower()
-        return ext in (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff",
-                        ".tif", ".webp", ".svg")
+        return _Path(path).suffix.lower() in _IMAGE_EXTS
 
-    # ── UI ──────────────────────────────────────────────────────
+    @staticmethod
+    def _is_audio_file(path: str) -> bool:
+        return _Path(path).suffix.lower() in _AUDIO_EXTS
+
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
 
-        # video container
-        self._container = QWidget()
-        self._container.setSizePolicy(QSizePolicy.Policy.Expanding,
-                                      QSizePolicy.Policy.Expanding)
-        self._container.setMinimumSize(320, 180)
-        self._container.setStyleSheet("background:black;")
-        root.addWidget(self._container, 1)
+        # Video container with subtitle overlay
+        self._video_wrapper = QWidget()
+        self._video_wrapper.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                          QSizePolicy.Policy.Expanding)
+        self._video_wrapper.setMinimumSize(320, 180)
+        self._video_wrapper.setStyleSheet("background:black;")
 
-        # time label
+        # Container for mpv
+        self._container = QWidget(self._video_wrapper)
+        self._container.setStyleSheet("background:black;")
+
+        # Subtitle overlay label
+        self._sub_label = QLabel(self._video_wrapper)
+        self._sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._sub_label.setWordWrap(True)
+        self._sub_label.setStyleSheet(
+            "color: white; background: rgba(0,0,0,160); "
+            "padding: 4px 12px; border-radius: 4px; "
+            "font-size: 15px; font-weight: bold; font-family: 'Malgun Gothic', sans-serif;"
+        )
+        self._sub_label.hide()
+
+        root.addWidget(self._video_wrapper, 1)
+
         self._lbl_time = QLabel("0:00.00 / 0:00.00")
         self._lbl_time.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(self._lbl_time)
 
-        # slider
         self._slider = QSlider(Qt.Orientation.Horizontal)
         self._slider.setRange(0, 10000)
         self._slider.sliderPressed.connect(self._slider_pressed)
@@ -78,7 +102,6 @@ class PreviewPanel(QWidget):
         self._slider.sliderMoved.connect(self._slider_moved)
         root.addWidget(self._slider)
 
-        # buttons
         btn_row = QHBoxLayout()
         for label, slot in [
             ("|<", self._on_back), ("Play", self._on_play_pause),
@@ -93,22 +116,49 @@ class PreviewPanel(QWidget):
         btn_row.addStretch()
         root.addLayout(btn_row)
 
-        # poll timer (30 fps)
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Resize container and subtitle label to match wrapper
+        w = self._video_wrapper.width()
+        h = self._video_wrapper.height()
+        self._container.setGeometry(0, 0, w, h)
+        # Position subtitle at bottom of video
+        sub_h = 50
+        self._sub_label.setGeometry(20, h - sub_h - 10, w - 40, sub_h)
+
+    # ── Subtitle data ──────────────────────────────────────────
+    def set_subtitle_events(self, events):
+        """Set subtitle events: [{"start": sec, "end": sec, "text": str}, ...]"""
+        self._subtitle_events = events or []
+        logger.info(f"Preview: loaded {len(self._subtitle_events)} subtitle events")
+
+    def _update_subtitle_overlay(self, tl_sec):
+        """Show/hide subtitle based on current timeline position."""
+        text = ""
+        for ev in self._subtitle_events:
+            if ev["start"] <= tl_sec < ev["end"]:
+                text = ev["text"]
+                break
+        if text != self._current_sub_text:
+            self._current_sub_text = text
+            if text:
+                self._sub_label.setText(text)
+                self._sub_label.show()
+            else:
+                self._sub_label.hide()
+
     # ── engine binding ──────────────────────────────────────────
     def set_engine(self, engine):
         self._engine = engine
-        self._sync_callback = None
 
     def set_sync_callback(self, callback):
-        """Set a callback that syncs timeline data to engine."""
         self._sync_callback = callback
 
     def _sync_before_play(self):
-        """Call the sync callback to update engine with latest clip data."""
         if self._sync_callback:
             self._sync_callback()
 
@@ -119,48 +169,44 @@ class PreviewPanel(QWidget):
         wid = int(self._container.winId())
         try:
             self._player = mpv.MPV(
-                wid=str(wid),
-                vo="gpu",
-                keep_open="yes",
-                idle="yes",
-                hr_seek="yes",
-                log_handler=self._mpv_log,
-            )
+                wid=str(wid), vo="gpu", keep_open="yes",
+                idle="yes", hr_seek="yes", log_handler=self._mpv_log)
         except Exception:
             self._player = mpv.MPV(
-                wid=str(wid),
-                vo="gpu",
-                keep_open="yes",
-                idle="yes",
-                log_handler=self._mpv_log,
-            )
-        self._player.observe_property("time-pos", self._on_time_pos)
+                wid=str(wid), vo="gpu", keep_open="yes",
+                idle="yes", log_handler=self._mpv_log)
 
         @self._player.event_callback("file-loaded")
         def _on_file_loaded(evt):
             self._file_loaded = True
             if self._pending_seek is not None:
                 try:
-                    self._player.time_pos = self._pending_seek
+                    self._player.command("seek", str(self._pending_seek), "absolute", "exact")
                 except Exception as e:
                     logger.warning(f"pending seek failed: {e}")
                 self._pending_seek = None
 
-        logger.info(f"mpv player created (wid={wid})")
+        logger.info(f"mpv video player created (wid={wid})")
+
+    def _ensure_audio_player(self):
+        if self._audio_player is not None:
+            return
+        try:
+            self._audio_player = mpv.MPV(
+                video="no", keep_open="yes", idle="yes",
+                hr_seek="yes", log_handler=self._mpv_log)
+            logger.info("mpv audio player created (headless)")
+        except Exception as e:
+            logger.error(f"Failed to create audio player: {e}")
+            self._audio_player = None
 
     @staticmethod
     def _mpv_log(level, component, message):
         if level in ("fatal", "error"):
             logger.error(f"mpv [{component}] {message}")
 
-    def _on_time_pos(self, _prop, value):
-        """Observe callback — not used for main logic, kept for debug."""
-        pass
-
     # ── file load + seek ────────────────────────────────────────
-    def _load_file(self, path: str, seek_sec: float = 0.0,
-                   pause: bool = True):
-        """Load a file into mpv. If same file, just seek."""
+    def _load_file(self, path, seek_sec=0.0, pause=True):
         self._ensure_player()
         if self._loaded_path == path:
             if pause:
@@ -177,15 +223,88 @@ class PreviewPanel(QWidget):
         except Exception as e:
             logger.error(f"loadfile failed: {e}")
 
-    def _do_seek(self, sec: float, exact: bool = False):
-        """Seek within current file using seek command."""
-        # Images don't support seek
+    def _load_audio(self, path, seek_sec=0.0, pause=True):
+        self._ensure_audio_player()
+        if self._audio_player is None:
+            return
+        if self._audio_loaded_path == path:
+            if pause:
+                self._audio_player.pause = True
+            try:
+                self._audio_player.command("seek", str(seek_sec), "absolute", "exact")
+            except Exception:
+                pass
+            return
+        self._audio_loaded_path = path
+        try:
+            self._audio_player.command("loadfile", path, "replace")
+            if pause:
+                self._audio_player.pause = True
+            if seek_sec > 0.1:
+                import threading
+                def _delayed_seek():
+                    _time.sleep(0.3)
+                    try:
+                        self._audio_player.command("seek", str(seek_sec), "absolute", "exact")
+                    except Exception:
+                        pass
+                threading.Thread(target=_delayed_seek, daemon=True).start()
+        except Exception as e:
+            logger.error(f"audio loadfile failed: {e}")
+
+    def _stop_audio(self):
+        if self._audio_player:
+            try:
+                self._audio_player.pause = True
+            except Exception:
+                pass
+        self._active_audio = None
+        self._audio_loaded_path = None
+
+    def _do_seek(self, sec):
         if self._loaded_path and self._is_image(self._loaded_path):
             return
         try:
             self._player.command("seek", str(sec), "absolute", "exact")
         except Exception as e:
             logger.warning(f"seek failed: {e}")
+
+    def _set_video_mute(self, mute):
+        if self._player:
+            try:
+                self._player.mute = mute
+            except Exception:
+                pass
+
+    def _sync_audio_for_time(self, t, playing=False):
+        if not self._engine:
+            return
+        q = self._engine.query(t)
+        audio_list = q.get("audio", [])
+        if audio_list:
+            ai = audio_list[0]
+            audio_path = ai["path"]
+            audio_src_time = ai["source_time"]
+            clip = ai["clip"]
+            self._set_video_mute(True)
+            if self._active_audio is None or self._active_audio.get("path") != audio_path:
+                self._load_audio(audio_path, audio_src_time, pause=not playing)
+                self._active_audio = clip
+                if playing:
+                    try:
+                        self._audio_player.pause = False
+                    except Exception:
+                        pass
+            elif playing:
+                try:
+                    if self._audio_player.pause:
+                        self._audio_player.pause = False
+                except Exception:
+                    pass
+        else:
+            self._set_video_mute(False)
+            if self._active_audio is not None:
+                self._stop_audio()
 
     # ── playback control ────────────────────────────────────────
     def play(self):
@@ -195,13 +314,17 @@ class PreviewPanel(QWidget):
         self._sync_before_play()
         self._playing = True
         self._btn_play.setText("Pause")
-
-        clip = self._engine.clip_at(self._engine.playhead)
+        t = self._engine.playhead
+        clip = self._engine.clip_at(t)
         if clip:
             self._start_clip(clip)
         else:
-            self._start_gap()
-
+            q = self._engine.query(t)
+            if q.get("audio"):
+                self._start_audio_only(t)
+            else:
+                self._start_gap()
+        self._sync_audio_for_time(t, playing=True)
         self._timer.start()
 
     def pause(self):
@@ -211,10 +334,11 @@ class PreviewPanel(QWidget):
         self._image_playing = False
         self._timer.stop()
         if self._player:
-            try:
-                self._player.pause = True
-            except Exception:
-                pass
+            try: self._player.pause = True
+            except Exception: pass
+        if self._audio_player:
+            try: self._audio_player.pause = True
+            except Exception: pass
 
     def stop(self):
         self.pause()
@@ -224,7 +348,6 @@ class PreviewPanel(QWidget):
         self._update_ui(0.0)
 
     def _seek_to_playhead(self):
-        """Seek preview to engine.playhead (paused)."""
         if not self._engine:
             return
         t = self._engine.playhead
@@ -237,236 +360,188 @@ class PreviewPanel(QWidget):
                 src_time = clip.get("in_point", 0) + (t - clip["timeline_start"])
                 self._load_file(path, src_time, pause=True)
             self._active_clip = clip
-            self._gap_playing = False
-            self._image_playing = False
         else:
             self._active_clip = None
-            self._gap_playing = False
-            self._image_playing = False
             if self._player:
-                try:
-                    self._player.pause = True
-                except Exception:
-                    pass
+                try: self._player.pause = True
+                except Exception: pass
+        self._gap_playing = False
+        self._image_playing = False
+        self._sync_audio_for_time(t, playing=False)
+        self._update_subtitle_overlay(t)
 
-    # ── clip / gap start ────────────────────────────────────────
     def _start_clip(self, clip):
-        """Begin playing a clip from the correct source position."""
         self._active_clip = clip
         self._gap_playing = False
         self._image_playing = False
         path = clip.get("path", "")
-
         if self._is_image(path):
-            # Image clip: load image in mpv (paused), advance by wall-clock
             self._image_playing = True
             self._play_start_real = _time.time()
             self._play_start_tl = self._engine.playhead
             self._load_file(path, 0.0, pause=True)
             return
-
-        src_time = clip.get("in_point", 0) + (self._engine.playhead
-                                        - clip["timeline_start"])
+        src_time = clip.get("in_point", 0) + (self._engine.playhead - clip["timeline_start"])
         self._load_file(clip["path"], src_time, pause=False)
-        try:
-            self._player.pause = False
-        except Exception:
-            pass
+        try: self._player.pause = False
+        except Exception: pass
 
     def _start_gap(self):
-        """Begin playing through a gap (black, real-time clock)."""
         self._active_clip = None
         self._gap_playing = True
         self._play_start_real = _time.time()
         self._play_start_tl = self._engine.playhead
         if self._player:
-            try:
-                self._player.pause = True
-            except Exception:
-                pass
+            try: self._player.pause = True
+            except Exception: pass
 
+    def _start_audio_only(self, t):
+        self._active_clip = None
+        self._gap_playing = True
+        self._play_start_real = _time.time()
+        self._play_start_tl = t
+        if self._player:
+            try: self._player.pause = True
+            except Exception: pass
 
-    # ── tick (30 fps timer) ─────────────────────────────────────
+    # ── tick ────────────────────────────────────────────────────
     def _tick(self):
         if not self._playing or not self._engine:
             return
 
-        # ── image clip: wall-clock based, mpv shows still image ──
         if self._image_playing and self._active_clip:
             elapsed = _time.time() - self._play_start_real
             tl_now = self._play_start_tl + elapsed
-            # Re-fetch clip from engine to get latest duration (after trim)
-            clip = self._engine.clip_at(tl_now)
-            if clip and clip.get("path") == self._active_clip.get("path"):
-                self._active_clip = clip  # update reference
             clip = self._active_clip
-            clip_end_tl = clip["timeline_start"] + clip["duration"]
-
-            if tl_now >= clip_end_tl - 0.05:
-                # image clip finished
-                self._engine.playhead = clip_end_tl
+            clip_end = clip["timeline_start"] + clip["duration"]
+            if tl_now >= clip_end - 0.05:
+                self._engine.playhead = clip_end
                 self._image_playing = False
-                next_clip = self._engine.clip_at(clip_end_tl)
-                if next_clip and next_clip is not clip:
-                    self._start_clip(next_clip)
-                elif self._engine.duration > 0 and clip_end_tl >= self._engine.duration:
-                    self.pause()
-                else:
-                    self._start_gap()
+                nc = self._engine.clip_at(clip_end)
+                if nc and nc is not clip: self._start_clip(nc)
+                elif self._engine.duration > 0 and clip_end >= self._engine.duration: self.pause()
+                else: self._start_gap()
             else:
                 self._engine.playhead = tl_now
+            self._sync_audio_for_time(self._engine.playhead, playing=True)
+            self._update_subtitle_overlay(self._engine.playhead)
             self._update_ui(self._engine.playhead)
             return
 
         if self._gap_playing:
-            # advance by wall-clock
             elapsed = _time.time() - self._play_start_real
             tl_now = self._play_start_tl + elapsed
             self._engine.playhead = tl_now
-
-            # check if we reached a clip
             clip = self._engine.clip_at(tl_now)
             if clip:
+                self._gap_playing = False
                 self._start_clip(clip)
-            else:
-                total = self._engine.duration
-                if total > 0 and tl_now >= total:
-                    self.pause()
+            elif self._engine.duration > 0 and tl_now >= self._engine.duration:
+                self.pause()
+            self._sync_audio_for_time(tl_now, playing=True)
+            self._update_subtitle_overlay(tl_now)
             self._update_ui(tl_now)
             return
 
-        # ── active clip playback ────────────────────────────────
         if not self._active_clip:
+            q = self._engine.query(self._engine.playhead)
+            if q.get("audio"):
+                self._start_audio_only(self._engine.playhead)
+                return
             self.pause()
             return
 
-        # read mpv position
-        try:
-            pos = self._player.time_pos
-        except Exception:
-            pos = None
+        try: pos = self._player.time_pos
+        except Exception: pos = None
         if pos is None:
             return
 
         clip = self._active_clip
-        src_pos = float(pos)
-        # map back to timeline
-        tl_now = clip["timeline_start"] + (src_pos - clip.get("in_point", 0))
-        clip_end_tl = clip["timeline_start"] + clip["duration"]
-
-        if tl_now >= clip_end_tl - 0.05:
-            # clip finished — advance
-            self._engine.playhead = clip_end_tl
-            next_clip = self._engine.clip_at(clip_end_tl)
-            if next_clip and next_clip is not clip:
-                self._start_clip(next_clip)
-            elif self._engine.duration > 0 and clip_end_tl >= self._engine.duration:
-                self.pause()
-            else:
-                self._start_gap()
+        tl_now = clip["timeline_start"] + (float(pos) - clip.get("in_point", 0))
+        clip_end = clip["timeline_start"] + clip["duration"]
+        if tl_now >= clip_end - 0.05:
+            self._engine.playhead = clip_end
+            nc = self._engine.clip_at(clip_end)
+            if nc and nc is not clip: self._start_clip(nc)
+            elif self._engine.duration > 0 and clip_end >= self._engine.duration: self.pause()
+            else: self._start_gap()
         else:
             self._engine.playhead = tl_now
-
+        self._sync_audio_for_time(self._engine.playhead, playing=True)
+        self._update_subtitle_overlay(self._engine.playhead)
         self._update_ui(self._engine.playhead)
 
-    # ── UI helpers ──────────────────────────────────────────────
-    def _update_ui(self, tl_sec: float):
+    # ── UI ──────────────────────────────────────────────────────
+    def _update_ui(self, tl_sec):
         total = self._engine.duration if self._engine else 0
-        if total > 0:
+        if total > 0 and not self._slider_dragging:
             self._slider.blockSignals(True)
             self._slider.setValue(int(tl_sec / total * 10000))
             self._slider.blockSignals(False)
-
         def _fmt(s):
             m, s2 = divmod(max(0, s), 60)
             return f"{int(m)}:{s2:05.2f}"
-
         self._lbl_time.setText(f"{_fmt(tl_sec)} / {_fmt(total)}")
         self.position_changed.emit(tl_sec)
 
-    # ── slider events ───────────────────────────────────────────
     def _slider_pressed(self):
         self._slider_dragging = True
-
     def _slider_released(self):
         self._slider_dragging = False
         self._slider_seek(self._slider.value())
-
     def _slider_moved(self, value):
         if self._slider_dragging:
             self._slider_seek(value)
-
     def _slider_seek(self, value):
-        if not self._engine:
-            return
+        if not self._engine: return
         total = self._engine.duration
-        if total <= 0:
-            return
+        if total <= 0: return
         t = value / 10000.0 * total
         self._engine.playhead = t
-        was_playing = self._playing
-        if was_playing:
-            self.pause()
+        was = self._playing
+        if was: self.pause()
         self._seek_to_playhead()
         self._update_ui(t)
-        if was_playing:
-            self.play()
+        if was: self.play()
 
-    # ── button callbacks ────────────────────────────────────────
     def _on_play_pause(self):
-        if self._playing:
-            self.pause()
-        else:
-            self.play()
-
+        if self._playing: self.pause()
+        else: self.play()
     def _on_stop(self):
         self.stop()
-
     def _on_back(self):
         if self._engine:
             t = max(0, self._engine.playhead - 5.0)
             self._engine.playhead = t
             self._seek_to_playhead()
             self._update_ui(t)
-
     def _on_forward(self):
         if self._engine:
-            t = min(self._engine.duration,
-                    self._engine.playhead + 5.0)
+            t = min(self._engine.duration, self._engine.playhead + 5.0)
             self._engine.playhead = t
             self._seek_to_playhead()
             self._update_ui(t)
 
-    # ── external API (called by MainWindow) ─────────────────────
-    def seek_timeline(self, time_sec: float):
-        """Seek preview to a specific timeline time."""
-        if not self._engine:
-            return
+    # ── external API ────────────────────────────────────────────
+    def seek_timeline(self, time_sec):
+        if not self._engine: return
         self._engine.playhead = time_sec
         self._seek_to_playhead()
         self._update_ui(time_sec)
-
-    def load_media(self, path: str):
-        """Legacy: load a single file for preview."""
+    def load_media(self, path):
         self._ensure_player()
         self._load_file(path, 0.0, pause=True)
-
-    # ── compatibility aliases (called by MainWindow) ──────────────
-    def seek_to(self, time_sec: float):
-        """Alias for seek_timeline."""
+    def seek_to(self, time_sec):
         self.seek_timeline(time_sec)
-
-    def load(self, path: str):
-        """Alias for load_media."""
+    def load(self, path):
         self.load_media(path)
 
-    # ── cleanup ─────────────────────────────────────────────────
     def closeEvent(self, event):
         self._timer.stop()
-        if self._player:
-            try:
-                self._player.terminate()
-            except Exception:
-                pass
-            self._player = None
+        for p in (self._player, self._audio_player):
+            if p:
+                try: p.terminate()
+                except Exception: pass
+        self._player = None
+        self._audio_player = None
         super().closeEvent(event)
