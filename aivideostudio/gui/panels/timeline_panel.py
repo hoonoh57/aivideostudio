@@ -696,8 +696,23 @@ class TimelineCanvas(QWidget):
             if track.get("solo"): flags += " S"
             if track.get("lock"): flags += " L"
             if not enabled: flags += " OFF"
+            # Eye icon for visibility
+            enabled = track.get("enabled", True)
+
+            # Disabled overlay on clip area
+            if not enabled:
+                p.fillRect(HEADER_WIDTH, y, w - HEADER_WIDTH, TRACK_HEIGHT, CLR_DISABLED_OVERLAY)
+            eye = "👁" if enabled else "ⓧ"
+            p.setFont(QFont("Segoe UI Emoji", 10))
+            p.setPen(QColor(200, 200, 200) if enabled else QColor(100, 60, 60))
+            p.drawText(QRect(2, y, 18, TRACK_HEIGHT),
+                       Qt.AlignmentFlag.AlignCenter, eye)
+
+            # Track label (after eye icon)
+            p.setPen(CLR_RULER_TEXT if enabled else QColor(100, 100, 100))
+            p.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             label = f"{icon} {track['name']}{flags}"
-            p.drawText(QRect(4, y, HEADER_WIDTH - 8, TRACK_HEIGHT),
+            p.drawText(QRect(22, y, HEADER_WIDTH - 26, TRACK_HEIGHT),
                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
 
             # Track separator line
@@ -739,6 +754,19 @@ class TimelineCanvas(QWidget):
         p.end()
 
     def mousePressEvent(self, event):
+        # Eye icon click (left-click on first 20px of header)
+        if event.button() == Qt.MouseButton.LeftButton:
+            x, y = event.pos().x(), event.pos().y()
+            if x < 20 and y >= RULER_HEIGHT:
+                track_idx = (y - RULER_HEIGHT) // TRACK_HEIGHT
+                if 0 <= track_idx < len(self.tracks):
+                    self.tracks[track_idx]["enabled"] = not self.tracks[track_idx].get("enabled", True)
+                    state = "ON" if self.tracks[track_idx]["enabled"] else "OFF"
+                    logger.info(f"Track {track_idx} visibility: {state}")
+                    self.update()
+                    event.accept()
+                    return
+
         if event.button() == Qt.MouseButton.RightButton:
             x, y = event.pos().x(), event.pos().y()
             if x < HEADER_WIDTH and y >= RULER_HEIGHT:

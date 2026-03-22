@@ -66,7 +66,7 @@ class TimelinePlaybackEngine:
             "audio": [],
             "subtitle": [],
             "timeline_pos": t,
-            "is_gap": True,
+            "is_gap": True, "video_muted": False,
         }
 
         for track in self._tracks:
@@ -87,8 +87,9 @@ class TimelinePlaybackEngine:
                         "clip": clip,
                     }
                     if track_type == "video":
-                        if not is_muted:
-                            result["video"] = info
+                        result["video"] = info
+                        if is_muted:
+                            result["video_muted"] = True
                         result["is_gap"] = False
                     elif track_type == "audio":
                         if not is_muted:
@@ -106,6 +107,8 @@ class TimelinePlaybackEngine:
         """Return the video clip dict at timeline time t, or None."""
         for track in self._tracks:
             if track.get("type") != "video":
+                continue
+            if not track.get("enabled", True):
                 continue
             for clip in track.get("clips", []):
                 cs = clip.get("timeline_start", 0)

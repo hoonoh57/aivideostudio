@@ -1,10 +1,13 @@
 from pathlib import Path
+import json
 from PyQt6.QtWidgets import (
-    QMainWindow, QDockWidget, QStatusBar, QLabel, QTabWidget
+    QMainWindow, QDockWidget, QStatusBar, QLabel, QTabWidget,
+    QFileDialog, QMessageBox
 )
 from PyQt6.QtCore import Qt, QSettings, QThread, pyqtSignal
-from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtGui import QKeySequence, QShortcut, QAction
 from loguru import logger
+
 try:
     import pysubs2
 except ImportError:
@@ -30,8 +33,10 @@ from aivideostudio.gui.panels.export_panel import ExportPanel
 from aivideostudio.core.playback_engine import TimelinePlaybackEngine
 
 AUDIO_EXTS = {".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a", ".wma"}
-SUBTITLE_EXTS = {".srt", ".ass", ".vtt"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tiff", ".tif", ".svg"}
+SUBTITLE_EXTS = {".srt", ".ass", ".vtt"}
+
+AVS_FILTER = "AIVideoStudio Project (*.avs);;All Files (*.*)"
 
 
 class ThumbnailWorker(QThread):
@@ -59,16 +64,17 @@ class MainWindow(QMainWindow):
         self.export_engine = ExportEngine(config.ffmpeg_path)
         self._workers = []
         self._current_video = None
+        self._project_path = None  # current .avs file path
 
-        self.setWindowTitle("AIVideoStudio v0.3")
+        self.setWindowTitle("AIVideoStudio v0.4")
         self.setMinimumSize(1280, 720)
         self.resize(1920, 1080)
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         hw = self.config.get_hw_accels()
-        info = f"GPU: {', '.join(hw[:3])}" if hw else "GPU: CPU only"
-        self.status_bar.addPermanentWidget(QLabel(info))
+        gpu_info = f"GPU: {", ".join(hw[:3])}" if hw else "GPU: CPU only"
+        self.status_bar.addPermanentWidget(QLabel(gpu_info))
 
         menu_actions = create_menu_bar(self)
         menu_actions["undo"].triggered.connect(self._do_undo)
@@ -77,6 +83,7 @@ class MainWindow(QMainWindow):
         setup_shortcuts(self)
         self._setup_panels()
         self._connect_signals()
+        self._setup_file_shortcuts()
         self._restore()
 
         if self.config.verify_ffmpeg():
@@ -84,6 +91,7 @@ class MainWindow(QMainWindow):
         else:
             self.status_bar.showMessage("FFmpeg not found!", 10000)
 
+    # ── Panels ──
     def _setup_panels(self):
         self.preview = PreviewPanel()
         self.setCentralWidget(self.preview)
@@ -103,13 +111,10 @@ class MainWindow(QMainWindow):
         right_tabs = QTabWidget()
         self.inspector_panel = InspectorPanel()
         right_tabs.addTab(self.inspector_panel, "Inspector")
-
         self.subtitle_panel = SubtitlePanel(self.subtitle_engine)
         right_tabs.addTab(self.subtitle_panel, "Subtitle")
-
         self.tts_panel = TTSPanel(self.tts_engine)
         right_tabs.addTab(self.tts_panel, "TTS")
-
         self.export_panel = ExportPanel(self.export_engine)
         right_tabs.addTab(self.export_panel, "Export")
 
@@ -118,7 +123,7 @@ class MainWindow(QMainWindow):
         self.d_right.setWidget(right_tabs)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.d_right)
 
-        # Create default tracks
+        # Default tracks
         self.timeline_panel.add_track("Video 1", "video")
         self.timeline_panel.add_track("Video 2", "video")
         self.timeline_panel.add_track("Audio 1", "audio")
@@ -129,6 +134,7 @@ class MainWindow(QMainWindow):
         self.preview.set_sync_callback(self._sync_timeline_to_preview)
         self.export_panel.set_playback_engine(self.playback_engine)
 
+    # ── Signals ──
     def _connect_signals(self):
         self.timeline_panel.seek_requested.connect(self._on_timeline_seek)
         self.preview.position_changed.connect(self._on_preview_position)
@@ -137,24 +143,188 @@ class MainWindow(QMainWindow):
         self.timeline_panel.clip_selected.connect(self._on_clip_selected)
         self.subtitle_panel.subtitle_ready.connect(self._on_subtitle_ready)
         self.tts_panel.audio_ready.connect(self._on_tts_ready)
-
-        # Connect drop from asset panel to timeline canvas
         self.timeline_panel.canvas.drop_requested.connect(self._on_timeline_drop)
-
-        # Delete clip
         sc_del = QShortcut(QKeySequence("Delete"), self)
         sc_del.activated.connect(self._delete_selected_clip)
 
-    # ── helpers ──
+    def _setup_file_shortcuts(self):
+        pass  # shortcuts handled by menu_bar
+
+    # ══════════════════════════════════════════════════════════
+    #  PROJECT SAVE / LOAD (.avs)
+    # ══════════════════════════════════════════════════════════
+    def _serialize_project(self):
+        """Serialize entire project state to dict."""
+        # Media files
+        media_files = []
+        for i in range(self.asset_panel.list_widget.count()):
+            item = self.asset_panel.list_widget.item(i)
+            if item:
+                media_files.append(item.data(Qt.ItemDataRole.UserRole))
+
+        # Tracks and clips
+        tracks = []
+        for track in self.timeline_panel.canvas.tracks:
+            clips = []
+            for cw in track["clips"]:
+                try:
+                    if not cw._alive:
+                        continue
+                except (RuntimeError, AttributeError):
+                    continue
+                cd = dict(cw.clip_data)
+                # Remove non-serializable keys
+                clips.append({
+                    "name": cd.get("name", ""),
+                    "path": cd.get("path", ""),
+                    "timeline_start": cd.get("timeline_start", 0),
+                    "duration": cd.get("duration", 0),
+                    "in_point": cd.get("in_point", 0),
+                    "out_point": cd.get("out_point", 0),
+                    "source_duration": cd.get("source_duration", 0),
+                    "track": cd.get("track", 0),
+                    "subtitle_text": cd.get("subtitle_text", ""),
+                })
+            tracks.append({
+                "name": track["name"],
+                "type": track["type"],
+                "enabled": track.get("enabled", True),
+                "mute": track.get("mute", False),
+                "solo": track.get("solo", False),
+                "lock": track.get("lock", False),
+                "visible": track.get("visible", True),
+                "clips": clips,
+            })
+
+        return {
+            "version": "0.4",
+            "media_files": media_files,
+            "tracks": tracks,
+        }
+
+    def _save_project(self):
+        if self._project_path:
+            self._do_save(self._project_path)
+        else:
+            self._save_project_as()
+
+    def _save_project_as(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Project As", "", AVS_FILTER)
+        if path:
+            if not path.endswith(".avs"):
+                path += ".avs"
+            self._do_save(path)
+
+    def _do_save(self, path):
+        try:
+            data = self._serialize_project()
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            self._project_path = path
+            self.setWindowTitle(f"AIVideoStudio v0.4 - {Path(path).name}")
+            self.status_bar.showMessage(f"Saved: {path}", 5000)
+            logger.info(f"Project saved: {path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", str(e))
+            logger.error(f"Save failed: {e}")
+
+    def _open_project(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Project", "", AVS_FILTER)
+        if path:
+            self._do_open(path)
+
+    def _do_open(self, path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "Open Error", str(e))
+            return
+
+        # Clear current state
+        self._clear_project()
+
+        # Restore media files
+        for fp in data.get("media_files", []):
+            if Path(fp).exists():
+                self.asset_panel.add_file(fp)
+            else:
+                logger.warning(f"Missing file: {fp}")
+
+        # Restore tracks
+        tracks_data = data.get("tracks", [])
+        # Remove default tracks
+        self.timeline_panel.canvas.tracks.clear()
+
+        for ti, td in enumerate(tracks_data):
+            self.timeline_panel.add_track(td["name"], td["type"])
+            track = self.timeline_panel.canvas.tracks[ti]
+            track["enabled"] = td.get("enabled", True)
+            track["mute"] = td.get("mute", False)
+            track["solo"] = td.get("solo", False)
+            track["lock"] = td.get("lock", False)
+            track["visible"] = td.get("visible", True)
+
+            for cd in td.get("clips", []):
+                self.timeline_panel.add_clip(ti, cd)
+
+        self._project_path = path
+        self.setWindowTitle(f"AIVideoStudio v0.4 - {Path(path).name}")
+        self._sync_timeline_to_preview()
+        self._refresh_subtitle_overlay()
+        self.status_bar.showMessage(f"Opened: {path}", 5000)
+        logger.info(f"Project opened: {path}")
+
+    def _new_project(self):
+        reply = QMessageBox.question(
+            self, "New Project",
+            "Discard current project and start new?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self._clear_project()
+            self._project_path = None
+            self.setWindowTitle("AIVideoStudio v0.4")
+            self.status_bar.showMessage("New project created", 3000)
+
+    def _clear_project(self):
+        """Clear all media, tracks, clips."""
+        # Clear clips from all tracks
+        for track in self.timeline_panel.canvas.tracks:
+            for cw in list(track["clips"]):
+                try:
+                    cw.mark_deleted()
+                    cw.hide()
+                    cw.setParent(None)
+                    cw.deleteLater()
+                except Exception:
+                    pass
+            track["clips"].clear()
+        self.timeline_panel.canvas.tracks.clear()
+        # Re-add defaults
+        self.timeline_panel.add_track("Video 1", "video")
+        self.timeline_panel.add_track("Video 2", "video")
+        self.timeline_panel.add_track("Audio 1", "audio")
+        self.timeline_panel.add_track("Audio 2", "audio")
+        self.timeline_panel.add_track("Subtitle 1", "subtitle")
+        # Clear media panel
+        self.asset_panel.list_widget.clear()
+        self.asset_panel.lbl_count.setText("0 files")
+        # Clear project assets
+        self.project = Project()
+        self.preview.set_subtitle_events([])
+
+    # ══════════════════════════════════════════════════════════
+    #  HELPERS
+    # ══════════════════════════════════════════════════════════
     def _find_track_index(self, track_type, start_idx=0):
-        """Find first track of given type starting from start_idx."""
         for i in range(start_idx, len(self.timeline_panel.canvas.tracks)):
             if self.timeline_panel.canvas.tracks[i]["type"] == track_type:
                 return i
         return -1
 
     def _find_track_end(self, track_idx):
-        """Find end time of last clip on a track."""
         end = 0.0
         if track_idx < 0 or track_idx >= len(self.timeline_panel.canvas.tracks):
             return end
@@ -168,7 +338,6 @@ class MainWindow(QMainWindow):
         return end
 
     def _ensure_asset(self, file_path):
-        """Return Asset for file_path, importing if needed."""
         for a in self.project.assets:
             if a.path == file_path:
                 return a
@@ -178,23 +347,23 @@ class MainWindow(QMainWindow):
                 return a
         return None
 
-    # ── core actions ──
+    # ══════════════════════════════════════════════════════════
+    #  CORE ACTIONS
+    # ══════════════════════════════════════════════════════════
     def _do_undo(self):
         if self.undo_manager.undo():
-            name = self.undo_manager.redo_name()
-            self.status_bar.showMessage("Undo: " + name, 3000)
+            self.status_bar.showMessage("Undo: " + (self.undo_manager.redo_name() or ""), 3000)
             self._sync_timeline_to_preview()
 
     def _do_redo(self):
         if self.undo_manager.redo():
-            name = self.undo_manager.undo_name()
-            self.status_bar.showMessage("Redo: " + name, 3000)
+            self.status_bar.showMessage("Redo: " + (self.undo_manager.undo_name() or ""), 3000)
             self._sync_timeline_to_preview()
 
     def _delete_selected_clip(self):
         self.timeline_panel.canvas._delete_selected()
 
-    # ── file import ──
+    # ── File import ──
     def _on_file_imported(self, file_path):
         info = probe(file_path, self.config.ffprobe_path)
         if info is None:
@@ -214,8 +383,7 @@ class MainWindow(QMainWindow):
         if info.has_video:
             self.export_panel.set_input(file_path, info.duration)
         self.status_bar.showMessage(
-            f"Imported: {asset.name} ({asset.width}x{asset.height}, "
-            f"{asset.duration:.1f}s)", 5000)
+            f"Imported: {asset.name} ({asset.width}x{asset.height}, {asset.duration:.1f}s)", 5000)
         if info.has_video:
             w = ThumbnailWorker(self.thumb_engine, file_path)
             w.done.connect(self._on_thumb)
@@ -223,9 +391,8 @@ class MainWindow(QMainWindow):
             w.start()
         self.preview.load(file_path)
 
-    # ── add to timeline (double-click) ──
+    # ── Add to timeline (double-click) ──
     def add_asset_to_timeline(self, file_path):
-        """Double-click: auto-place on the correct track type."""
         asset = self._ensure_asset(file_path)
         if asset is None:
             self.status_bar.showMessage(f"Cannot add: {Path(file_path).name}", 5000)
@@ -233,23 +400,22 @@ class MainWindow(QMainWindow):
         duration = asset.duration if asset.duration > 0 else 5.0
         ext = Path(file_path).suffix.lower()
 
-        # Choose track by file type
-        if ext in AUDIO_EXTS:
-            track_idx = self._find_track_index("audio")
-        elif ext in SUBTITLE_EXTS:
+        # Subtitle auto-split
+        if ext in SUBTITLE_EXTS:
             track_idx = self._find_track_index("subtitle")
             if track_idx >= 0:
                 count = self._auto_split_subtitle(file_path, track_idx)
-                self.status_bar.showMessage(
-                    f"Subtitle: {count} lines placed on track {track_idx}", 5000)
+                self.status_bar.showMessage(f"Subtitle: {count} lines on track {track_idx}", 5000)
                 return
+
+        if ext in AUDIO_EXTS:
+            track_idx = self._find_track_index("audio")
         else:
             track_idx = self._find_track_index("video")
         if track_idx < 0:
             track_idx = 0
 
         end_time = self._find_track_end(track_idx)
-
         clip = Clip(asset_path=file_path, track_index=track_idx,
                     source_in=0.0, source_out=duration, name=asset.name)
         self.project.add_clip(clip)
@@ -262,22 +428,26 @@ class MainWindow(QMainWindow):
         self.timeline_panel.add_clip(track_idx, clip_dict)
         self._sync_timeline_to_preview()
         self.preview.seek_to(end_time)
-        self.status_bar.showMessage(
-            f"Added to timeline: {asset.name} at {end_time:.1f}s (track {track_idx})", 3000)
+        self.status_bar.showMessage(f"Added: {asset.name} at {end_time:.1f}s (track {track_idx})", 3000)
 
-    # ── drop onto timeline (drag from media panel) ──
+    # ── Drop onto timeline ──
     def _on_timeline_drop(self, file_path, track_idx, time_sec):
-        """Handle drop from asset panel onto a specific track/time."""
         asset = self._ensure_asset(file_path)
         if asset is None:
             self.status_bar.showMessage(f"Cannot add: {Path(file_path).name}", 5000)
             return
         duration = asset.duration if asset.duration > 0 else 5.0
+        ext = Path(file_path).suffix.lower()
 
-        # Clamp track index
         if track_idx < 0 or track_idx >= len(self.timeline_panel.canvas.tracks):
             track_idx = 0
         time_sec = max(0.0, time_sec)
+
+        # Subtitle auto-split on subtitle track
+        if ext in SUBTITLE_EXTS and self.timeline_panel.canvas.tracks[track_idx]["type"] == "subtitle":
+            count = self._auto_split_subtitle(file_path, track_idx)
+            self.status_bar.showMessage(f"Subtitle: {count} lines on track {track_idx}", 5000)
+            return
 
         clip = Clip(asset_path=file_path, track_index=track_idx,
                     source_in=0.0, source_out=duration, name=asset.name)
@@ -291,37 +461,68 @@ class MainWindow(QMainWindow):
         self.timeline_panel.add_clip(track_idx, clip_dict)
         self._sync_timeline_to_preview()
         self.preview.seek_to(time_sec)
-        # If subtitle file dropped on subtitle track, auto-split
-        ext = Path(file_path).suffix.lower()
-        if ext in SUBTITLE_EXTS and self.timeline_panel.canvas.tracks[track_idx]["type"] == "subtitle":
-            # Remove the single clip we just added
-            if self.timeline_panel.canvas.tracks[track_idx]["clips"]:
-                last = self.timeline_panel.canvas.tracks[track_idx]["clips"][-1]
-                self.timeline_panel.canvas.remove_clip_widget(last)
-            count = self._auto_split_subtitle(file_path, track_idx)
-            self.status_bar.showMessage(
-                f"Subtitle: {count} lines placed on track {track_idx}", 5000)
-            return
+        self.status_bar.showMessage(f"Dropped: {asset.name} at {time_sec:.1f}s on track {track_idx}", 3000)
 
-        self.status_bar.showMessage(
-            f"Dropped: {asset.name} at {time_sec:.1f}s on track {track_idx}", 3000)
+    # ── Subtitle auto-split ──
+    def _auto_split_subtitle(self, file_path, track_idx):
+        if pysubs2 is None:
+            self.status_bar.showMessage("pysubs2 not installed", 5000)
+            return 0
+        try:
+            subs = pysubs2.load(file_path, encoding="utf-8")
+        except Exception:
+            try:
+                subs = pysubs2.load(file_path)
+            except Exception as e:
+                logger.error(f"Cannot parse subtitle: {e}")
+                return 0
+        count = 0
+        events = []
+        for ev in subs.events:
+            if ev.is_comment:
+                continue
+            start_sec = ev.start / 1000.0
+            end_sec = ev.end / 1000.0
+            dur = end_sec - start_sec
+            if dur < 0.1:
+                continue
+            text = ev.plaintext.strip()
+            if not text:
+                continue
+            clip_dict = {
+                "name": text[:30] + ("..." if len(text) > 30 else ""),
+                "path": file_path, "timeline_start": start_sec,
+                "duration": dur, "in_point": start_sec, "out_point": end_sec,
+                "source_duration": dur, "track": track_idx, "subtitle_text": text,
+            }
+            self.timeline_panel.add_clip(track_idx, clip_dict)
+            events.append({"start": start_sec, "end": end_sec, "text": text})
+            count += 1
+        self.preview.set_subtitle_events(events)
+        self._sync_timeline_to_preview()
+        return count
 
-    # ── thumbnail / preview / clip selection ──
+    def _refresh_subtitle_overlay(self):
+        events = []
+        for track in self.timeline_panel.canvas.tracks:
+            if track.get("type") != "subtitle" or not track.get("enabled", True):
+                continue
+            for cw in track["clips"]:
+                try:
+                    if not cw._alive: continue
+                except (RuntimeError, AttributeError): continue
+                cd = cw.clip_data
+                events.append({
+                    "start": cd.get("timeline_start", 0),
+                    "end": cd.get("timeline_start", 0) + cd.get("duration", 0),
+                    "text": cd.get("subtitle_text", cd.get("name", "")),
+                })
+        events.sort(key=lambda e: e["start"])
+        self.preview.set_subtitle_events(events)
+
+    # ── Callbacks ──
     def _on_thumb(self, fp, tp):
         self.asset_panel.set_thumbnail(fp, tp)
-
-    def _on_file_preview(self, file_path):
-        self.preview.load(file_path)
-        self._current_video = file_path
-        self.subtitle_panel.set_video_path(file_path)
-        duration = 0.0
-        for a in self.project.assets:
-            if a.path == file_path:
-                self.inspector_panel.show_asset_info(a)
-                duration = a.duration
-                break
-        self.export_panel.set_input(file_path, duration)
-        self.status_bar.showMessage(f"Preview: {Path(file_path).name}", 3000)
 
     def _on_clip_selected(self, clip_data):
         self.inspector_panel.show_clip_info(clip_data)
@@ -333,12 +534,10 @@ class MainWindow(QMainWindow):
 
     def _on_subtitle_ready(self, path):
         self.export_panel.set_subtitle(path)
-        # Auto-place generated subtitle on subtitle track
         track_idx = self._find_track_index("subtitle")
         if track_idx >= 0:
             count = self._auto_split_subtitle(path, track_idx)
-            self.status_bar.showMessage(
-                f"Subtitle ready: {Path(path).name} ({count} lines placed)", 5000)
+            self.status_bar.showMessage(f"Subtitle: {Path(path).name} ({count} lines)", 5000)
         else:
             self.status_bar.showMessage(f"Subtitle ready: {Path(path).name}", 5000)
 
@@ -346,17 +545,15 @@ class MainWindow(QMainWindow):
         self.asset_panel.add_file(path)
         self.status_bar.showMessage(f"TTS audio ready: {Path(path).name}", 5000)
 
-    # ── window state ──
+    # ── Window state ──
     def _restore(self):
         s = QSettings("AVS", "AIVideoStudio")
         g = s.value("geometry")
         st = s.value("windowState")
-        if g:
-            self.restoreGeometry(g)
-        if st:
-            self.restoreState(st)
+        if g: self.restoreGeometry(g)
+        if st: self.restoreState(st)
 
-    # ── timeline sync ──
+    # ── Timeline sync ──
     def _on_timeline_seek(self, time_sec):
         self._sync_timeline_to_preview()
         self.preview.seek_to(time_sec)
@@ -367,13 +564,10 @@ class MainWindow(QMainWindow):
             clips = []
             for cw in track["clips"]:
                 try:
-                    if cw._alive:
-                        clips.append(dict(cw.clip_data))
-                except (RuntimeError, AttributeError):
-                    continue
+                    if cw._alive: clips.append(dict(cw.clip_data))
+                except (RuntimeError, AttributeError): continue
             tracks_data.append({
-                "name": track["name"],
-                "type": track["type"],
+                "name": track["name"], "type": track["type"],
                 "clips": clips,
                 "enabled": track.get("enabled", True),
                 "mute": track.get("mute", False),
@@ -385,89 +579,8 @@ class MainWindow(QMainWindow):
         self.timeline_panel.canvas._playhead = time_sec
         self.timeline_panel.canvas.update()
         m, s = divmod(time_sec, 60)
-        self.timeline_panel.lbl_time.setText(
-            str(int(m)) + ":" + "{:05.2f}".format(s))
+        self.timeline_panel.lbl_time.setText(f"{int(m)}:{s:05.2f}")
         self.playback_engine.playhead = time_sec
-
-
-    # ── Subtitle auto-split into timeline clips ──────────────
-    def _auto_split_subtitle(self, file_path, track_idx):
-        """Parse SRT/ASS file and create one clip per subtitle line on the subtitle track."""
-        if pysubs2 is None:
-            self.status_bar.showMessage("pysubs2 not installed (pip install pysubs2)", 5000)
-            return 0
-        try:
-            subs = pysubs2.load(file_path, encoding="utf-8")
-        except Exception:
-            try:
-                subs = pysubs2.load(file_path)
-            except Exception as e:
-                logger.error(f"Cannot parse subtitle: {e}")
-                self.status_bar.showMessage(f"Cannot parse subtitle: {e}", 5000)
-                return 0
-
-        count = 0
-        events_for_preview = []
-        for ev in subs.events:
-            if ev.is_comment:
-                continue
-            start_sec = ev.start / 1000.0
-            end_sec = ev.end / 1000.0
-            duration = end_sec - start_sec
-            if duration < 0.1:
-                continue
-            text = ev.plaintext.strip()
-            if not text:
-                continue
-
-            clip_dict = {
-                "name": text[:30] + ("..." if len(text) > 30 else ""),
-                "path": file_path,
-                "timeline_start": start_sec,
-                "duration": duration,
-                "in_point": start_sec,
-                "out_point": end_sec,
-                "source_duration": duration,
-                "track": track_idx,
-                "subtitle_text": text,
-            }
-            self.timeline_panel.add_clip(track_idx, clip_dict)
-            events_for_preview.append({
-                "start": start_sec,
-                "end": end_sec,
-                "text": text,
-            })
-            count += 1
-
-        # Feed to preview for overlay
-        self.preview.set_subtitle_events(events_for_preview)
-        self._sync_timeline_to_preview()
-        logger.info(f"Auto-split subtitle: {count} clips from {Path(file_path).name}")
-        return count
-
-    def _refresh_subtitle_overlay(self):
-        """Collect all subtitle events from subtitle tracks and send to preview."""
-        events = []
-        for track in self.timeline_panel.canvas.tracks:
-            if track.get("type") != "subtitle":
-                continue
-            if not track.get("enabled", True):
-                continue
-            for cw in track["clips"]:
-                try:
-                    if not cw._alive:
-                        continue
-                except (RuntimeError, AttributeError):
-                    continue
-                cd = cw.clip_data
-                text = cd.get("subtitle_text", cd.get("name", ""))
-                events.append({
-                    "start": cd.get("timeline_start", 0),
-                    "end": cd.get("timeline_start", 0) + cd.get("duration", 0),
-                    "text": text,
-                })
-        events.sort(key=lambda e: e["start"])
-        self.preview.set_subtitle_events(events)
 
     def closeEvent(self, e):
         s = QSettings("AVS", "AIVideoStudio")
