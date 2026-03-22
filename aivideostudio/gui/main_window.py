@@ -113,7 +113,9 @@ class MainWindow(QMainWindow):
     
         # Create default tracks
         self.timeline_panel.add_track("Video 1", "video")
+        self.timeline_panel.add_track("Video 2", "video")
         self.timeline_panel.add_track("Audio 1", "audio")
+        self.timeline_panel.add_track("Audio 2", "audio")
         self.timeline_panel.set_undo_manager(self.undo_manager)
         self.preview.set_engine(self.playback_engine)
         self.preview.set_sync_callback(self._sync_timeline_to_preview)

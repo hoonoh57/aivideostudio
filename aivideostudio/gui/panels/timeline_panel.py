@@ -291,11 +291,14 @@ class TimelineCanvas(QWidget):
             self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def add_track(self, name, track_type="video"):
-        track = {"name": name, "type": track_type, "clips": []}
+        track = {
+            "name": name, "type": track_type, "clips": [],
+            "mute": False, "solo": False, "lock": False, "visible": True,
+        }
         self.tracks.append(track)
         self._update_size()
         self.update()
-        logger.info("Track added: " + name)
+        logger.info("Track added: " + name + " (" + track_type + ")")
         return track
 
     def add_clip(self, track_index, clip_data):
@@ -343,6 +346,10 @@ class TimelineCanvas(QWidget):
     def _on_clip_clicked(self, cw, event):
         if not cw._alive:
             return
+        # Check if track is locked
+        for track in self.tracks:
+            if cw in track["clips"] and track.get("lock"):
+                return  # locked track, ignore
         if self._tool == "razor":
             local_x = event.pos().x()
             cut_time = cw.clip_data.get("timeline_start", 0) + local_x / self._pps
@@ -563,9 +570,15 @@ class TimelineCanvas(QWidget):
             p.fillRect(0, y, w, TRACK_HEIGHT, color)
             p.setPen(CLR_RULER_TEXT)
             p.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            # Track name + type icon
+            icon = "V" if track["type"] == "video" else "A"
+            mute_txt = " [M]" if track.get("mute") else ""
+            solo_txt = " [S]" if track.get("solo") else ""
+            lock_txt = " [L]" if track.get("lock") else ""
+            label = icon + " " + track["name"] + mute_txt + solo_txt + lock_txt
             p.drawText(QRect(4, y, HEADER_WIDTH - 8, TRACK_HEIGHT),
                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                       track["name"])
+                       label)
         p.fillRect(HEADER_WIDTH, 0, w - HEADER_WIDTH, RULER_HEIGHT, CLR_RULER)
         p.setPen(CLR_RULER_TEXT)
         p.setFont(QFont("Segoe UI", 8))
@@ -599,6 +612,15 @@ class TimelineCanvas(QWidget):
         p.end()
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            x = event.pos().x()
+            y = event.pos().y()
+            if x < HEADER_WIDTH and y >= RULER_HEIGHT:
+                track_idx = (y - RULER_HEIGHT) // TRACK_HEIGHT
+                if 0 <= track_idx < len(self.tracks):
+                    self._show_track_menu(track_idx, event.globalPosition().toPoint())
+                    event.accept()
+                    return
         if event.button() == Qt.MouseButton.LeftButton:
             x = event.pos().x()
             y = event.pos().y()
