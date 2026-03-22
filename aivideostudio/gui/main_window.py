@@ -165,9 +165,10 @@ class MainWindow(QMainWindow):
         self.project.add_asset(asset)
         self.inspector_panel.show_asset_info(asset)
 
-        if info.has_video:
+        if info.has_video or info.has_audio:
             self._current_video = file_path
             self.subtitle_panel.set_video_path(file_path)
+        if info.has_video:
             self.export_panel.set_input(file_path, info.duration)
 
         self.status_bar.showMessage(

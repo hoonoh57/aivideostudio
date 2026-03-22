@@ -32,15 +32,25 @@ class SubtitleEngine:
         logger.info(f"Transcribing via subprocess: {audio_path}")
         result = subprocess.run(
             [python_exe, str(worker_script), str(audio_path), language, model_size],
-            capture_output=True, text=True, timeout=600,
+            capture_output=True, timeout=600,
             creationflags=0x08000000
         )
+        stdout = result.stdout.decode("utf-8", errors="replace")
+        stderr = result.stderr.decode("utf-8", errors="replace")
 
         if result.returncode != 0:
-            logger.error(f"Whisper subprocess failed: {result.stderr[-500:]}")
-            raise RuntimeError(result.stderr[-300:])
+            logger.error(f"Whisper subprocess failed (rc={result.returncode}): {stderr[-500:]}")
+            raise RuntimeError(stderr[-300:])
 
-        segments = json.loads(result.stdout)
+        logger.info(f"Whisper stdout length: {len(stdout)}, stderr length: {len(stderr)}")
+        if stderr:
+            logger.debug(f"Whisper stderr: {stderr[:300]}")
+
+        if not stdout.strip():
+            logger.warning("Whisper returned empty stdout")
+            return []
+
+        segments = json.loads(stdout)
         logger.info(f"Transcribed {len(segments)} segments")
         return segments
 

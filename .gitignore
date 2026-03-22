@@ -23,3 +23,6 @@ setup_files.py
 todo.txt
 subtitle.srt
 scripts/libmpv-2.dll 
+libmpv-2.dll
+*.dll
+setup_gpu.bat

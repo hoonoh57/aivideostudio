@@ -26,7 +26,7 @@ class Config:
         found = shutil.which(name)
         if found:
             return found
-        for base in ["C:/ffmpeg/bin", "E:/ffmpeg/bin"]:
+        for base in ["D:/ffmpeg/bin", "C:/ffmpeg/bin"]:
             p = Path(base) / exe_name
             if p.exists():
                 return str(p)

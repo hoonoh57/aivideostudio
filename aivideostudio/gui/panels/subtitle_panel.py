@@ -31,13 +31,23 @@ class WhisperWorker(QThread):
 
     def run(self):
         try:
-            os.environ["CUDA_VISIBLE_DEVICES"] = ""
-            self.progress.emit("Extracting audio...")
-            audio = self.engine.extract_audio(self.video_path)
-            if not audio:
-                self.error.emit("Audio extraction failed")
-                return
-            self.progress.emit("Transcribing (CPU)... please wait")
+            from pathlib import Path
+            ext = Path(self.video_path).suffix.lower()
+            audio_exts = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wma"}
+
+            if ext in audio_exts:
+                # Audio file: skip extraction, use directly
+                self.progress.emit("Transcribing audio (GPU)... please wait")
+                audio = self.video_path
+            else:
+                # Video file: extract audio first
+                self.progress.emit("Extracting audio...")
+                audio = self.engine.extract_audio(self.video_path)
+                if not audio:
+                    self.error.emit("Audio extraction failed")
+                    return
+                self.progress.emit("Transcribing (GPU)... please wait")
+
             segments = self.engine.transcribe(audio, self.language, self.model_size)
             self.finished.emit(segments)
         except Exception as e:
@@ -75,6 +85,7 @@ class SubtitlePanel(QWidget):
         row_gen.addWidget(self.combo_lang)
         self.combo_model = QComboBox()
         self.combo_model.addItems(["base", "small", "medium", "large"])
+        self.combo_model.setCurrentIndex(2)  # default: medium
         row_gen.addWidget(self.combo_model)
         lay.addLayout(row_gen)
 

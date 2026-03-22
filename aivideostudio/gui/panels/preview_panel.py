@@ -120,7 +120,7 @@ class PreviewPanel(QWidget):
         try:
             self._player = mpv.MPV(
                 wid=str(wid),
-                vo="direct3d",
+                vo="gpu",
                 keep_open="yes",
                 idle="yes",
                 hr_seek="yes",
@@ -129,7 +129,7 @@ class PreviewPanel(QWidget):
         except Exception:
             self._player = mpv.MPV(
                 wid=str(wid),
-                vo="direct3d",
+                vo="gpu",
                 keep_open="yes",
                 idle="yes",
                 log_handler=self._mpv_log,
