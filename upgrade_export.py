@@ -1,4 +1,216 @@
-"""Export Panel — timeline-based export with FFmpeg + NVENC + audio mixing."""
+"""upgrade_export.py — Export 기능 대폭 업그레이드
+1) export_panel.py: NVENC 최적화, 오디오 트랙 합성, 진행률 개선, 한글 인코딩 수정
+2) playback_engine.py: get_ordered_audio_segments() 추가
+3) export_engine.py: NVENC preset 추가
+"""
+import os
+
+BASE = r"D:\aivideostudio\aivideostudio"
+
+# ============================================================
+# 1) playback_engine.py — 오디오 세그먼트 메서드 추가
+# ============================================================
+pe_path = os.path.join(BASE, "core", "playback_engine.py")
+with open(pe_path, "r", encoding="utf-8") as f:
+    pe_code = f.read()
+
+audio_method = '''
+    def get_ordered_audio_segments(self):
+        """Return all audio segments sorted by timeline_start."""
+        segments = []
+        for track in self._tracks:
+            if track.get("type") != "audio":
+                continue
+            for clip in track.get("clips", []):
+                cs = clip.get("timeline_start", 0)
+                dur = clip.get("duration", 0)
+                segments.append({
+                    "timeline_start": cs,
+                    "timeline_end": cs + dur,
+                    "path": clip.get("path", ""),
+                    "in_point": clip.get("in_point", 0),
+                    "out_point": clip.get("out_point", clip.get("in_point", 0) + dur),
+                })
+        segments.sort(key=lambda s: s["timeline_start"])
+        return segments
+'''
+
+if "get_ordered_audio_segments" not in pe_code:
+    pe_code = pe_code.rstrip() + "\n" + audio_method + "\n"
+    with open(pe_path, "w", encoding="utf-8") as f:
+        f.write(pe_code)
+    print(f"[1] OK: {pe_path} — get_ordered_audio_segments() added")
+else:
+    print(f"[1] SKIP: {pe_path} — already has audio segments method")
+
+
+# ============================================================
+# 2) export_engine.py — NVENC presets 추가
+# ============================================================
+ee_path = os.path.join(BASE, "engines", "export_engine.py")
+
+export_engine_code = r'''import subprocess
+import re
+from pathlib import Path
+from loguru import logger
+
+
+PRESETS = {
+    "YouTube 1080p": {
+        "vcodec": "libx264", "acodec": "aac",
+        "width": 1920, "height": 1080, "fps": 30,
+        "vbitrate": "8M", "abitrate": "192k",
+        "extra": ["-preset", "medium", "-crf", "20"]
+    },
+    "YouTube 1080p (NVENC)": {
+        "vcodec": "h264_nvenc", "acodec": "aac",
+        "width": 1920, "height": 1080, "fps": 30,
+        "vbitrate": "8M", "abitrate": "192k",
+        "extra": ["-preset", "p4", "-rc", "vbr", "-cq", "20"]
+    },
+    "YouTube 4K": {
+        "vcodec": "libx264", "acodec": "aac",
+        "width": 3840, "height": 2160, "fps": 30,
+        "vbitrate": "35M", "abitrate": "320k",
+        "extra": ["-preset", "medium", "-crf", "18"]
+    },
+    "YouTube 4K (NVENC)": {
+        "vcodec": "h264_nvenc", "acodec": "aac",
+        "width": 3840, "height": 2160, "fps": 30,
+        "vbitrate": "35M", "abitrate": "320k",
+        "extra": ["-preset", "p4", "-rc", "vbr", "-cq", "18"]
+    },
+    "YouTube Shorts": {
+        "vcodec": "libx264", "acodec": "aac",
+        "width": 1080, "height": 1920, "fps": 30,
+        "vbitrate": "6M", "abitrate": "192k",
+        "extra": ["-preset", "medium", "-crf", "22"]
+    },
+    "Instagram Reels": {
+        "vcodec": "libx264", "acodec": "aac",
+        "width": 1080, "height": 1920, "fps": 30,
+        "vbitrate": "5M", "abitrate": "128k",
+        "extra": ["-preset", "medium", "-crf", "23"]
+    },
+    "TikTok": {
+        "vcodec": "libx264", "acodec": "aac",
+        "width": 1080, "height": 1920, "fps": 30,
+        "vbitrate": "4M", "abitrate": "128k",
+        "extra": ["-preset", "fast", "-crf", "23"]
+    },
+    "Fast Preview": {
+        "vcodec": "libx264", "acodec": "aac",
+        "width": 1280, "height": 720, "fps": 30,
+        "vbitrate": "2M", "abitrate": "128k",
+        "extra": ["-preset", "ultrafast", "-crf", "28"]
+    },
+    "Fast Preview (NVENC)": {
+        "vcodec": "h264_nvenc", "acodec": "aac",
+        "width": 1280, "height": 720, "fps": 30,
+        "vbitrate": "2M", "abitrate": "128k",
+        "extra": ["-preset", "p1", "-rc", "vbr", "-cq", "28"]
+    },
+}
+
+
+class ExportEngine:
+    def __init__(self, ffmpeg_path="ffmpeg"):
+        self.ffmpeg_path = ffmpeg_path
+        self._process = None
+        self._cancelled = False
+
+    def export(self, input_path, output_path, preset_name="YouTube 1080p",
+               subtitle_path=None, crop_shorts=False,
+               on_progress=None, on_complete=None):
+        preset = PRESETS.get(preset_name, PRESETS["YouTube 1080p"])
+        filters = []
+
+        if crop_shorts or "1920" == str(preset["height"]):
+            if preset["width"] < preset["height"]:
+                filters.append("crop=ih*9/16:ih")
+
+        filters.append(f"scale={preset['width']}:{preset['height']}:force_original_aspect_ratio=decrease")
+        filters.append(f"pad={preset['width']}:{preset['height']}:(ow-iw)/2:(oh-ih)/2")
+        filters.append(f"fps={preset['fps']}")
+
+        if subtitle_path and Path(subtitle_path).exists():
+            sub_path_escaped = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
+            filters.append(f"subtitles='{sub_path_escaped}'")
+
+        vf = ",".join(filters)
+
+        cmd = [
+            self.ffmpeg_path, "-y", "-hide_banner",
+            "-progress", "pipe:1",
+            "-i", str(input_path),
+            "-vf", vf,
+            "-c:v", preset["vcodec"],
+            "-b:v", preset["vbitrate"],
+            "-c:a", preset["acodec"],
+            "-b:a", preset["abitrate"],
+        ]
+        cmd.extend(preset.get("extra", []))
+        cmd.append(str(output_path))
+
+        logger.info(f"Export: {preset_name} -> {output_path}")
+        self._cancelled = False
+
+        try:
+            self._process = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                creationflags=0x08000000
+            )
+        except FileNotFoundError:
+            if on_complete:
+                on_complete(False, "FFmpeg not found")
+            return False
+
+        import threading
+
+        def _read():
+            pat = re.compile(r"out_time_ms=(\d+)")
+            for line in self._process.stdout:
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
+                m = pat.search(line)
+                if m and on_progress:
+                    on_progress(int(m.group(1)) / 1_000_000)
+
+        t = threading.Thread(target=_read, daemon=True)
+        t.start()
+        _, stderr = self._process.communicate()
+        t.join(timeout=5)
+
+        ok = self._process.returncode == 0 and not self._cancelled
+        if on_complete:
+            err_msg = ""
+            if not ok and stderr:
+                err_msg = stderr.decode("utf-8", errors="replace")[-500:] if isinstance(stderr, bytes) else stderr[-500:]
+            on_complete(ok, err_msg)
+        logger.info(f"Export {'OK' if ok else 'FAILED'}: {output_path}")
+        return ok
+
+    def cancel(self):
+        self._cancelled = True
+        if self._process and self._process.poll() is None:
+            self._process.terminate()
+
+    @staticmethod
+    def get_preset_names():
+        return list(PRESETS.keys())
+'''
+
+with open(ee_path, "w", encoding="utf-8") as f:
+    f.write(export_engine_code)
+print(f"[2] OK: {ee_path} — NVENC presets added")
+
+
+# ============================================================
+# 3) export_panel.py — 완전 새로 작성
+# ============================================================
+ep_path = os.path.join(BASE, "gui", "panels", "export_panel.py")
+
+export_panel_code = r'''"""Export Panel — timeline-based export with FFmpeg + NVENC + audio mixing."""
 import os
 import re
 import shutil
@@ -482,3 +694,29 @@ class ExportPanel(QWidget):
         self.lbl_status.setText("Error: " + msg[:100])
         QMessageBox.critical(self, "Export Error", msg[:500])
         logger.error("Export error: " + msg)
+'''
+
+with open(ep_path, "w", encoding="utf-8") as f:
+    f.write(export_panel_code)
+print(f"[3] OK: {ep_path}")
+
+
+# ============================================================
+print()
+print("=" * 60)
+print("Export upgrade complete!")
+print()
+print("  [1] playback_engine.py: get_ordered_audio_segments() added")
+print("  [2] export_engine.py: NVENC presets (h264_nvenc)")
+print("  [3] export_panel.py: NVENC presets, audio track mixing,")
+print("       subtitle burn-in, gap handling, UTF-8 encoding")
+print()
+print("Features:")
+print("  - NVENC presets: YouTube 1080p/4K/Preview with GPU encoding")
+print("  - Audio track mixing: TTS, BGM merged into final video")
+print("  - Subtitle burn-in: SRT/ASS with Malgun Gothic font")
+print("  - Gap handling: black segments for timeline gaps")
+print("  - Preset default: YouTube 1080p NVENC")
+print()
+print("Next: python -m aivideostudio.main")
+print("=" * 60)

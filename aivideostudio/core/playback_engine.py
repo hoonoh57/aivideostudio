@@ -140,3 +140,23 @@ class TimelinePlaybackEngine:
                 })
         segments.sort(key=lambda s: s["timeline_start"])
         return segments
+
+    def get_ordered_audio_segments(self):
+        """Return all audio segments sorted by timeline_start."""
+        segments = []
+        for track in self._tracks:
+            if track.get("type") != "audio":
+                continue
+            for clip in track.get("clips", []):
+                cs = clip.get("timeline_start", 0)
+                dur = clip.get("duration", 0)
+                segments.append({
+                    "timeline_start": cs,
+                    "timeline_end": cs + dur,
+                    "path": clip.get("path", ""),
+                    "in_point": clip.get("in_point", 0),
+                    "out_point": clip.get("out_point", clip.get("in_point", 0) + dur),
+                })
+        segments.sort(key=lambda s: s["timeline_start"])
+        return segments
+

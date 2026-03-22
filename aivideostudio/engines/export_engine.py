@@ -11,11 +11,23 @@ PRESETS = {
         "vbitrate": "8M", "abitrate": "192k",
         "extra": ["-preset", "medium", "-crf", "20"]
     },
+    "YouTube 1080p (NVENC)": {
+        "vcodec": "h264_nvenc", "acodec": "aac",
+        "width": 1920, "height": 1080, "fps": 30,
+        "vbitrate": "8M", "abitrate": "192k",
+        "extra": ["-preset", "p4", "-rc", "vbr", "-cq", "20"]
+    },
     "YouTube 4K": {
         "vcodec": "libx264", "acodec": "aac",
         "width": 3840, "height": 2160, "fps": 30,
         "vbitrate": "35M", "abitrate": "320k",
         "extra": ["-preset", "medium", "-crf", "18"]
+    },
+    "YouTube 4K (NVENC)": {
+        "vcodec": "h264_nvenc", "acodec": "aac",
+        "width": 3840, "height": 2160, "fps": 30,
+        "vbitrate": "35M", "abitrate": "320k",
+        "extra": ["-preset", "p4", "-rc", "vbr", "-cq", "18"]
     },
     "YouTube Shorts": {
         "vcodec": "libx264", "acodec": "aac",
@@ -40,6 +52,12 @@ PRESETS = {
         "width": 1280, "height": 720, "fps": 30,
         "vbitrate": "2M", "abitrate": "128k",
         "extra": ["-preset", "ultrafast", "-crf", "28"]
+    },
+    "Fast Preview (NVENC)": {
+        "vcodec": "h264_nvenc", "acodec": "aac",
+        "width": 1280, "height": 720, "fps": 30,
+        "vbitrate": "2M", "abitrate": "128k",
+        "extra": ["-preset", "p1", "-rc", "vbr", "-cq", "28"]
     },
 }
 
@@ -89,7 +107,7 @@ class ExportEngine:
         try:
             self._process = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, creationflags=0x08000000
+                creationflags=0x08000000
             )
         except FileNotFoundError:
             if on_complete:
@@ -100,10 +118,9 @@ class ExportEngine:
 
         def _read():
             pat = re.compile(r"out_time_ms=(\d+)")
-            while self._process and self._process.poll() is None:
-                line = self._process.stdout.readline()
-                if not line:
-                    break
+            for line in self._process.stdout:
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
                 m = pat.search(line)
                 if m and on_progress:
                     on_progress(int(m.group(1)) / 1_000_000)
@@ -115,7 +132,10 @@ class ExportEngine:
 
         ok = self._process.returncode == 0 and not self._cancelled
         if on_complete:
-            on_complete(ok, "" if ok else (stderr or "")[-500:])
+            err_msg = ""
+            if not ok and stderr:
+                err_msg = stderr.decode("utf-8", errors="replace")[-500:] if isinstance(stderr, bytes) else stderr[-500:]
+            on_complete(ok, err_msg)
         logger.info(f"Export {'OK' if ok else 'FAILED'}: {output_path}")
         return ok
 
