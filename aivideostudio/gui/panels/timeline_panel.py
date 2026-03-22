@@ -160,6 +160,13 @@ class ClipWidget(QWidget):
                 self.clip_data["duration"] = dur
             else:
                 new_out = self._original_out + delta_s
+                # Limit to source duration (videos only, not images)
+                src_dur = self.clip_data.get("source_duration", 0)
+                ext = Path(self.clip_data.get("path", "")).suffix.lower()
+                is_image = ext in (".png", ".jpg", ".jpeg", ".bmp", ".gif",
+                                   ".tiff", ".tif", ".webp", ".svg")
+                if not is_image and src_dur > 0 and new_out > src_dur:
+                    new_out = src_dur
                 dur = new_out - self.clip_data.get("in_point", 0)
                 if dur < 0.1:
                     return
@@ -363,6 +370,9 @@ class TimelineCanvas(QWidget):
     def _on_clip_trimmed(self, cw):
         self._update_total_duration()
         self.update()
+        # Sync: emit clip_selected so main_window syncs engine
+        if cw._alive:
+            self.clip_selected.emit(cw.clip_data)
 
     def _try_snap(self, cw):
         self._snap_lines = []
@@ -407,6 +417,7 @@ class TimelineCanvas(QWidget):
                 break
         if track_idx < 0:
             return
+        src_dur = cw.clip_data.get("source_duration", 0)
         clip1 = {
             "name": name,
             "path": filepath,
@@ -414,6 +425,7 @@ class TimelineCanvas(QWidget):
             "duration": split_offset,
             "in_point": in_pt,
             "out_point": in_pt + split_offset,
+            "source_duration": src_dur,
             "track": track_idx,
         }
         clip2 = {
@@ -423,6 +435,7 @@ class TimelineCanvas(QWidget):
             "duration": d - split_offset,
             "in_point": in_pt + split_offset,
             "out_point": in_pt + d,
+            "source_duration": src_dur,
             "track": track_idx,
         }
         old_data = dict(cw.clip_data)

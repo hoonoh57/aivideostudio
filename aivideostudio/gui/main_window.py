@@ -116,6 +116,7 @@ class MainWindow(QMainWindow):
         self.timeline_panel.add_track("Audio 1", "audio")
         self.timeline_panel.set_undo_manager(self.undo_manager)
         self.preview.set_engine(self.playback_engine)
+        self.preview.set_sync_callback(self._sync_timeline_to_preview)
 
     def _connect_signals(self):
         self.timeline_panel.seek_requested.connect(self._on_timeline_seek)
@@ -266,6 +267,7 @@ class MainWindow(QMainWindow):
             "duration": duration,
             "in_point": 0.0,
             "out_point": duration,
+            "source_duration": duration,
             "track": 0,
         }
         self.timeline_panel.add_clip(0, clip_dict)

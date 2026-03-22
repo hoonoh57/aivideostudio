@@ -101,6 +101,16 @@ class PreviewPanel(QWidget):
     # ── engine binding ──────────────────────────────────────────
     def set_engine(self, engine):
         self._engine = engine
+        self._sync_callback = None
+
+    def set_sync_callback(self, callback):
+        """Set a callback that syncs timeline data to engine."""
+        self._sync_callback = callback
+
+    def _sync_before_play(self):
+        """Call the sync callback to update engine with latest clip data."""
+        if self._sync_callback:
+            self._sync_callback()
 
     # ── mpv lifecycle ───────────────────────────────────────────
     def _ensure_player(self):
@@ -248,6 +258,9 @@ class PreviewPanel(QWidget):
             self._image_playing = True
             self._play_start_real = _time.time()
             self._play_start_tl = self._engine.playhead
+            logger.debug(f"IMAGE clip start: tl={self._play_start_tl:.2f}, "
+                         f"dur={clip.get('duration', 0):.2f}, "
+                         f"end={clip['timeline_start'] + clip.get('duration', 0):.2f}")
             self._load_file(path, 0.0, pause=True)
             return
 
@@ -281,6 +294,10 @@ class PreviewPanel(QWidget):
         if self._image_playing and self._active_clip:
             elapsed = _time.time() - self._play_start_real
             tl_now = self._play_start_tl + elapsed
+            # Re-fetch clip from engine to get latest duration (after trim)
+            clip = self._engine.clip_at(tl_now)
+            if clip and clip.get("path") == self._active_clip.get("path"):
+                self._active_clip = clip  # update reference
             clip = self._active_clip
             clip_end_tl = clip["timeline_start"] + clip["duration"]
 
