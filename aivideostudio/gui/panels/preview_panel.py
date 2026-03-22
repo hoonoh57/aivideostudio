@@ -1,10 +1,11 @@
 """Preview Panel — mpv-based, driven by TimelinePlaybackEngine.
-Supports video + audio track playback + subtitle overlay."""
+Supports video + audio track playback + subtitle overlay + speed control."""
 import os, sys, time as _time
 from pathlib import Path as _Path
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
-                              QPushButton, QSlider, QLabel, QSizePolicy)
+                              QPushButton, QSlider, QLabel, QSizePolicy,
+                              QComboBox)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 from loguru import logger
@@ -26,9 +27,12 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff",
                ".tif", ".webp", ".svg"}
 _AUDIO_EXTS = {".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a", ".wma"}
 
+SPEED_OPTIONS = ["0.25x", "0.5x", "0.75x", "1x", "1.25x", "1.5x", "2x", "3x", "4x"]
+SPEED_VALUES = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0]
+
 
 class PreviewPanel(QWidget):
-    """Video preview with audio track + subtitle overlay."""
+    """Video preview with audio track + subtitle overlay + speed control."""
 
     position_changed = pyqtSignal(float)
 
@@ -50,7 +54,7 @@ class PreviewPanel(QWidget):
         self._slider_dragging = False
         self._image_playing = False
         self._sync_callback = None
-        # Subtitle data: list of {"start": float, "end": float, "text": str}
+        self._speed = 1.0
         self._subtitle_events = []
         self._current_sub_text = ""
         self._build_ui()
@@ -66,6 +70,7 @@ class PreviewPanel(QWidget):
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(2)
 
         # Video container with subtitle overlay
         self._video_wrapper = QWidget()
@@ -73,8 +78,6 @@ class PreviewPanel(QWidget):
                                           QSizePolicy.Policy.Expanding)
         self._video_wrapper.setMinimumSize(320, 180)
         self._video_wrapper.setStyleSheet("background:black;")
-
-        # Container for mpv
         self._container = QWidget(self._video_wrapper)
         self._container.setStyleSheet("background:black;")
 
@@ -88,13 +91,15 @@ class PreviewPanel(QWidget):
             "font-size: 15px; font-weight: bold; font-family: 'Malgun Gothic', sans-serif;"
         )
         self._sub_label.hide()
-
         root.addWidget(self._video_wrapper, 1)
 
+        # Time label
         self._lbl_time = QLabel("0:00.00 / 0:00.00")
         self._lbl_time.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_time.setStyleSheet("font-size: 11px; color: #ccc;")
         root.addWidget(self._lbl_time)
 
+        # Slider
         self._slider = QSlider(Qt.Orientation.Horizontal)
         self._slider.setRange(0, 10000)
         self._slider.sliderPressed.connect(self._slider_pressed)
@@ -102,19 +107,46 @@ class PreviewPanel(QWidget):
         self._slider.sliderMoved.connect(self._slider_moved)
         root.addWidget(self._slider)
 
-        btn_row = QHBoxLayout()
-        for label, slot in [
-            ("|<", self._on_back), ("Play", self._on_play_pause),
-            ("Stop", self._on_stop), (">|", self._on_forward),
-        ]:
+        # Transport buttons - two rows
+        # Row 1: Navigation
+        nav_row = QHBoxLayout()
+        nav_row.setSpacing(2)
+        nav_btns = [
+            ("\u23EE", self._go_start, "Go to Start"),
+            ("\u23EA", self._skip_back, "Back 5s"),
+            ("\u25B6 Play", self._on_play_pause, "Play / Pause"),
+            ("\u23F9 Stop", self._on_stop, "Stop"),
+            ("\u23E9", self._skip_forward, "Forward 5s"),
+            ("\u23ED", self._go_end, "Go to End"),
+        ]
+        for label, slot, tip in nav_btns:
             b = QPushButton(label)
-            b.setFixedWidth(50)
+            b.setToolTip(tip)
+            b.setMinimumWidth(55)
+            b.setStyleSheet(
+                "QPushButton{background:#2979ff;color:white;padding:5px 8px;"
+                "font-size:12px;font-weight:bold;border-radius:3px;}"
+                "QPushButton:hover{background:#448aff;}"
+                "QPushButton:pressed{background:#1565c0;}")
             b.clicked.connect(slot)
-            btn_row.addWidget(b)
-            if label == "Play":
+            nav_row.addWidget(b)
+            if "Play" in label:
                 self._btn_play = b
-        btn_row.addStretch()
-        root.addLayout(btn_row)
+
+        # Speed control
+        nav_row.addSpacing(8)
+        lbl_spd = QLabel("Speed:")
+        lbl_spd.setStyleSheet("color:#aaa; font-size:11px;")
+        nav_row.addWidget(lbl_spd)
+        self._combo_speed = QComboBox()
+        self._combo_speed.addItems(SPEED_OPTIONS)
+        self._combo_speed.setCurrentIndex(3)  # 1x
+        self._combo_speed.setFixedWidth(65)
+        self._combo_speed.currentIndexChanged.connect(self._on_speed_changed)
+        nav_row.addWidget(self._combo_speed)
+
+        nav_row.addStretch()
+        root.addLayout(nav_row)
 
         self._timer = QTimer(self)
         self._timer.setInterval(33)
@@ -122,22 +154,33 @@ class PreviewPanel(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # Resize container and subtitle label to match wrapper
         w = self._video_wrapper.width()
         h = self._video_wrapper.height()
         self._container.setGeometry(0, 0, w, h)
-        # Position subtitle at bottom of video
         sub_h = 50
         self._sub_label.setGeometry(20, h - sub_h - 10, w - 40, sub_h)
 
+    # ── Speed control ──────────────────────────────────────────
+    def _on_speed_changed(self, idx):
+        self._speed = SPEED_VALUES[idx]
+        if self._player:
+            try:
+                self._player.speed = self._speed
+            except Exception:
+                pass
+        if self._audio_player:
+            try:
+                self._audio_player.speed = self._speed
+            except Exception:
+                pass
+        logger.info(f"Playback speed: {self._speed}x")
+
     # ── Subtitle data ──────────────────────────────────────────
     def set_subtitle_events(self, events):
-        """Set subtitle events: [{"start": sec, "end": sec, "text": str}, ...]"""
         self._subtitle_events = events or []
         logger.info(f"Preview: loaded {len(self._subtitle_events)} subtitle events")
 
     def _update_subtitle_overlay(self, tl_sec):
-        """Show/hide subtitle based on current timeline position."""
         text = ""
         for ev in self._subtitle_events:
             if ev["start"] <= tl_sec < ev["end"]:
@@ -218,6 +261,7 @@ class PreviewPanel(QWidget):
         self._loaded_path = path
         try:
             self._player.command("loadfile", path, "replace")
+            self._player.speed = self._speed
             if pause:
                 self._player.pause = True
         except Exception as e:
@@ -238,6 +282,7 @@ class PreviewPanel(QWidget):
         self._audio_loaded_path = path
         try:
             self._audio_player.command("loadfile", path, "replace")
+            self._audio_player.speed = self._speed
             if pause:
                 self._audio_player.pause = True
             if seek_sec > 0.1:
@@ -280,13 +325,19 @@ class PreviewPanel(QWidget):
         if not self._engine:
             return
         q = self._engine.query(t)
+
+        # Video track mute control
+        video_muted = q.get("video_muted", False)
+        self._set_video_mute(video_muted)
+
         audio_list = q.get("audio", [])
         if audio_list:
             ai = audio_list[0]
             audio_path = ai["path"]
             audio_src_time = ai["source_time"]
             clip = ai["clip"]
-            self._set_video_mute(True)
+            if not video_muted:
+                self._set_video_mute(True)
             if self._active_audio is None or self._active_audio.get("path") != audio_path:
                 self._load_audio(audio_path, audio_src_time, pause=not playing)
                 self._active_audio = clip
@@ -302,7 +353,8 @@ class PreviewPanel(QWidget):
                 except Exception:
                     pass
         else:
-            self._set_video_mute(False)
+            if not video_muted:
+                self._set_video_mute(False)
             if self._active_audio is not None:
                 self._stop_audio()
 
@@ -313,7 +365,7 @@ class PreviewPanel(QWidget):
         self._ensure_player()
         self._sync_before_play()
         self._playing = True
-        self._btn_play.setText("Pause")
+        self._btn_play.setText("\u23F8 Pause")
         t = self._engine.playhead
         clip = self._engine.clip_at(t)
         if clip:
@@ -329,7 +381,7 @@ class PreviewPanel(QWidget):
 
     def pause(self):
         self._playing = False
-        self._btn_play.setText("Play")
+        self._btn_play.setText("\u25B6 Play")
         self._gap_playing = False
         self._image_playing = False
         self._timer.stop()
@@ -383,7 +435,9 @@ class PreviewPanel(QWidget):
             return
         src_time = clip.get("in_point", 0) + (self._engine.playhead - clip["timeline_start"])
         self._load_file(clip["path"], src_time, pause=False)
-        try: self._player.pause = False
+        try:
+            self._player.pause = False
+            self._player.speed = self._speed
         except Exception: pass
 
     def _start_gap(self):
@@ -410,7 +464,7 @@ class PreviewPanel(QWidget):
             return
 
         if self._image_playing and self._active_clip:
-            elapsed = _time.time() - self._play_start_real
+            elapsed = (_time.time() - self._play_start_real) * self._speed
             tl_now = self._play_start_tl + elapsed
             clip = self._active_clip
             clip_end = clip["timeline_start"] + clip["duration"]
@@ -429,7 +483,7 @@ class PreviewPanel(QWidget):
             return
 
         if self._gap_playing:
-            elapsed = _time.time() - self._play_start_real
+            elapsed = (_time.time() - self._play_start_real) * self._speed
             tl_now = self._play_start_tl + elapsed
             self._engine.playhead = tl_now
             clip = self._engine.clip_at(tl_now)
@@ -504,18 +558,39 @@ class PreviewPanel(QWidget):
         self._update_ui(t)
         if was: self.play()
 
+    # ── Navigation ──────────────────────────────────────────────
     def _on_play_pause(self):
         if self._playing: self.pause()
         else: self.play()
+
     def _on_stop(self):
         self.stop()
-    def _on_back(self):
+
+    def _go_start(self):
+        """Go to timeline start (0:00)."""
+        if self._engine:
+            self._engine.playhead = 0.0
+            self._seek_to_playhead()
+            self._update_ui(0.0)
+
+    def _go_end(self):
+        """Go to timeline end."""
+        if self._engine:
+            t = max(0, self._engine.duration - 0.1)
+            self._engine.playhead = t
+            self._seek_to_playhead()
+            self._update_ui(t)
+
+    def _skip_back(self):
+        """Skip back 5 seconds."""
         if self._engine:
             t = max(0, self._engine.playhead - 5.0)
             self._engine.playhead = t
             self._seek_to_playhead()
             self._update_ui(t)
-    def _on_forward(self):
+
+    def _skip_forward(self):
+        """Skip forward 5 seconds."""
         if self._engine:
             t = min(self._engine.duration, self._engine.playhead + 5.0)
             self._engine.playhead = t

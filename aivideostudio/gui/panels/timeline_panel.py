@@ -8,6 +8,15 @@ from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush
 from loguru import logger
 
+def _qf(name, pixel_size, weight=None):
+    """Create QFont with pixel size (avoids QFont pointSize <= 0 error)."""
+    f = QFont(name)
+    f.setPixelSize(pixel_size)
+    if weight is not None:
+        f.setWeight(weight)
+    return f
+
+
 TRACK_HEIGHT = 40
 HEADER_WIDTH = 120
 RULER_HEIGHT = 26
@@ -108,7 +117,7 @@ class ClipWidget(QWidget):
         name = Path(self.clip_data.get("name", "Clip")).stem
         dur = self.clip_data.get("duration", 0)
         label = f"{name} ({dur:.1f}s)"
-        p.setFont(QFont("Segoe UI", 7))
+        p.setFont(_qf("Segoe UI", 10))
         tr = r.adjusted(HANDLE_WIDTH + 2, 1, -HANDLE_WIDTH - 2, -1)
         p.drawText(tr, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
         p.end()
@@ -332,6 +341,7 @@ class TimelineCanvas(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAcceptDrops(True)
+        self._dragging_playhead = False
 
     def set_undo_manager(self, um):
         self._undo_manager = um
@@ -689,7 +699,7 @@ class TimelineCanvas(QWidget):
 
             # Header
             p.setPen(CLR_RULER_TEXT if enabled else QColor(100, 100, 100))
-            p.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            p.setFont(_qf("Segoe UI", 11, QFont.Weight.Bold))
             icon = _TRACK_ICONS.get(track["type"], "?")
             flags = ""
             if track.get("mute"): flags += " M"
@@ -703,14 +713,14 @@ class TimelineCanvas(QWidget):
             if not enabled:
                 p.fillRect(HEADER_WIDTH, y, w - HEADER_WIDTH, TRACK_HEIGHT, CLR_DISABLED_OVERLAY)
             eye = "👁" if enabled else "ⓧ"
-            p.setFont(QFont("Segoe UI Emoji", 10))
+            p.setFont(_qf("Segoe UI Emoji", 14))
             p.setPen(QColor(200, 200, 200) if enabled else QColor(100, 60, 60))
             p.drawText(QRect(2, y, 18, TRACK_HEIGHT),
                        Qt.AlignmentFlag.AlignCenter, eye)
 
             # Track label (after eye icon)
             p.setPen(CLR_RULER_TEXT if enabled else QColor(100, 100, 100))
-            p.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            p.setFont(_qf("Segoe UI", 11, QFont.Weight.Bold))
             label = f"{icon} {track['name']}{flags}"
             p.drawText(QRect(22, y, HEADER_WIDTH - 26, TRACK_HEIGHT),
                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
@@ -722,7 +732,7 @@ class TimelineCanvas(QWidget):
         # Ruler
         p.fillRect(HEADER_WIDTH, 0, w - HEADER_WIDTH, RULER_HEIGHT, CLR_RULER)
         p.setPen(CLR_RULER_TEXT)
-        p.setFont(QFont("Segoe UI", 7))
+        p.setFont(_qf("Segoe UI", 10))
         step = 1.0
         if self._pps < 30: step = 5.0
         elif self._pps < 60: step = 2.0
@@ -777,7 +787,19 @@ class TimelineCanvas(QWidget):
                     return
         if event.button() == Qt.MouseButton.LeftButton:
             x, y = event.pos().x(), event.pos().y()
+            # Check if clicking near playhead for drag (within 10px)
+            px = int(self._playhead * self._pps) + HEADER_WIDTH
+            if abs(x - px) < 10 and y < RULER_HEIGHT + len(self.tracks) * TRACK_HEIGHT:
+                self._dragging_playhead = True
+                self._playhead = max(0, (x - HEADER_WIDTH) / self._pps)
+                self.playhead_moved.emit(self._playhead)
+                self.seek_requested.emit(self._playhead)
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
+                self.update()
+                event.accept()
+                return
             if y < RULER_HEIGHT and x > HEADER_WIDTH:
+                self._dragging_playhead = True
                 self._playhead = max(0, (x - HEADER_WIDTH) / self._pps)
                 self.playhead_moved.emit(self._playhead)
                 self.seek_requested.emit(self._playhead)
@@ -786,9 +808,68 @@ class TimelineCanvas(QWidget):
                 return
         super().mousePressEvent(event)
 
+    def mouseMoveEvent(self, event):
+        if self._dragging_playhead:
+            x = event.pos().x()
+            t = max(0, (x - HEADER_WIDTH) / self._pps)
+            t = min(t, self._total_duration)
+            self._playhead = t
+            self.playhead_moved.emit(self._playhead)
+            self.seek_requested.emit(self._playhead)
+            self.update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._dragging_playhead:
+            self._dragging_playhead = False
+            if self._tool != "razor":
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Delete:
             self._delete_selected()
+            event.accept()
+        elif event.key() == Qt.Key.Key_Space:
+            # Toggle play/pause — emit signal for main window
+            self.seek_requested.emit(-1.0)  # special signal: -1 = toggle play
+            event.accept()
+        elif event.key() == Qt.Key.Key_Left:
+            step = 1.0 if not event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 0.1
+            new_t = max(0, self._playhead - step)
+            self._playhead = new_t
+            self.playhead_moved.emit(self._playhead)
+            self.seek_requested.emit(self._playhead)
+            self.update()
+            event.accept()
+        elif event.key() == Qt.Key.Key_Right:
+            step = 1.0 if not event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 0.1
+            new_t = min(self._total_duration, self._playhead + step)
+            self._playhead = new_t
+            self.playhead_moved.emit(self._playhead)
+            self.seek_requested.emit(self._playhead)
+            self.update()
+            event.accept()
+        elif event.key() == Qt.Key.Key_Home:
+            # Go to selected clip start or timeline start
+            if self._selected_widget and self._selected_widget._alive:
+                t = self._selected_widget.clip_data.get("timeline_start", 0)
+            else:
+                t = 0.0
+            self._playhead = t
+            self.playhead_moved.emit(self._playhead)
+            self.seek_requested.emit(self._playhead)
+            self.update()
+            event.accept()
+        elif event.key() == Qt.Key.Key_End:
+            self._playhead = self._total_duration
+            self.playhead_moved.emit(self._playhead)
+            self.seek_requested.emit(self._playhead)
+            self.update()
             event.accept()
         else:
             super().keyPressEvent(event)
@@ -930,6 +1011,36 @@ class TimelinePanel(QWidget):
                     if cw._alive:
                         return cw.clip_data
         return None
+
+    def ensure_playhead_visible(self):
+        """Auto-scroll so the playhead stays visible with margin."""
+        if not hasattr(self, 'scroll') or not self.canvas:
+            return
+        px = int(self.canvas._playhead * self.canvas._pps) + HEADER_WIDTH
+        scroll_bar = self.scroll.horizontalScrollBar()
+        view_width = self.scroll.viewport().width()
+        current_scroll = scroll_bar.value()
+        margin = int(view_width * 0.15)  # 15% margin from right edge
+
+        # If playhead is approaching right edge
+        if px > current_scroll + view_width - margin:
+            new_scroll = px - view_width + margin + 50
+            scroll_bar.setValue(min(new_scroll, scroll_bar.maximum()))
+        # If playhead goes before left edge
+        elif px < current_scroll + margin:
+            new_scroll = max(0, px - margin - 50)
+            scroll_bar.setValue(new_scroll)
+
+    def go_to_clip_start(self):
+        """Navigate to the start of the selected clip."""
+        cw = self.canvas._selected_widget
+        if cw and cw._alive:
+            start = cw.clip_data.get("timeline_start", 0)
+            self.canvas._playhead = start
+            self.canvas.playhead_moved.emit(start)
+            self.canvas.seek_requested.emit(start)
+            self.canvas.update()
+            self.ensure_playhead_visible()
 
     def setFocus(self, *args):
         self.canvas.setFocus()

@@ -137,11 +137,13 @@ class TimelinePlaybackEngine:
 
     def get_ordered_video_segments(self):
         """Return all video segments sorted by timeline_start.
-        Each segment: (timeline_start, timeline_end, path, in_point, out_point)
+        Respects enabled flag — disabled tracks are excluded from export.
         """
         segments = []
         for track in self._tracks:
             if track.get("type") != "video":
+                continue
+            if not track.get("enabled", True):
                 continue
             for clip in track.get("clips", []):
                 cs = clip.get("timeline_start", 0)
@@ -157,10 +159,16 @@ class TimelinePlaybackEngine:
         return segments
 
     def get_ordered_audio_segments(self):
-        """Return all audio segments sorted by timeline_start."""
+        """Return all audio segments sorted by timeline_start.
+        Respects enabled/mute — disabled or muted audio tracks excluded from export.
+        """
         segments = []
         for track in self._tracks:
             if track.get("type") != "audio":
+                continue
+            if not track.get("enabled", True):
+                continue
+            if track.get("mute", False):
                 continue
             for clip in track.get("clips", []):
                 cs = clip.get("timeline_start", 0)

@@ -51,6 +51,25 @@ class ThumbnailWorker(QThread):
             self.done.emit(self.path, r)
 
 
+class ImportWorker(QThread):
+    """Async file import: probe media info in background thread."""
+    done = pyqtSignal(str, object)  # file_path, probe_info (or None)
+
+    def __init__(self, file_path, ffprobe_path):
+        super().__init__()
+        self.file_path = file_path
+        self.ffprobe_path = ffprobe_path
+
+    def run(self):
+        try:
+            info = probe(self.file_path, self.ffprobe_path)
+            self.done.emit(self.file_path, info)
+        except Exception as e:
+            from loguru import logger
+            logger.error(f"Import probe failed: {e}")
+            self.done.emit(self.file_path, None)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, config):
         super().__init__()
@@ -66,14 +85,14 @@ class MainWindow(QMainWindow):
         self._current_video = None
         self._project_path = None  # current .avs file path
 
-        self.setWindowTitle("AIVideoStudio v0.4")
+        self.setWindowTitle("AIVideoStudio v0.5")
         self.setMinimumSize(1280, 720)
         self.resize(1920, 1080)
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         hw = self.config.get_hw_accels()
-        gpu_info = f"GPU: {", ".join(hw[:3])}" if hw else "GPU: CPU only"
+        gpu_info = f"GPU: {', '.join(hw[:3])}" if hw else "GPU: CPU only"
         self.status_bar.addPermanentWidget(QLabel(gpu_info))
 
         menu_actions = create_menu_bar(self)
@@ -146,6 +165,14 @@ class MainWindow(QMainWindow):
         self.timeline_panel.canvas.drop_requested.connect(self._on_timeline_drop)
         sc_del = QShortcut(QKeySequence("Delete"), self)
         sc_del.activated.connect(self._delete_selected_clip)
+        # Go to selected clip start
+        sc_home = QShortcut(QKeySequence("Home"), self)
+        sc_home.activated.connect(self.timeline_panel.go_to_clip_start)
+        # Go to timeline start/end
+        sc_start = QShortcut(QKeySequence("Ctrl+Home"), self)
+        sc_start.activated.connect(lambda: self.preview.seek_to(0))
+        sc_end = QShortcut(QKeySequence("Ctrl+End"), self)
+        sc_end.activated.connect(lambda: self.preview.seek_to(self.playback_engine.duration - 0.1 if self.playback_engine.duration > 0 else 0))
 
     def _setup_file_shortcuts(self):
         pass  # shortcuts handled by menu_bar
@@ -222,7 +249,7 @@ class MainWindow(QMainWindow):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             self._project_path = path
-            self.setWindowTitle(f"AIVideoStudio v0.4 - {Path(path).name}")
+            self.setWindowTitle(f"AIVideoStudio v0.5 - {Path(path).name}")
             self.status_bar.showMessage(f"Saved: {path}", 5000)
             logger.info(f"Project saved: {path}")
         except Exception as e:
@@ -271,7 +298,7 @@ class MainWindow(QMainWindow):
                 self.timeline_panel.add_clip(ti, cd)
 
         self._project_path = path
-        self.setWindowTitle(f"AIVideoStudio v0.4 - {Path(path).name}")
+        self.setWindowTitle(f"AIVideoStudio v0.5 - {Path(path).name}")
         self._sync_timeline_to_preview()
         self._refresh_subtitle_overlay()
         self.status_bar.showMessage(f"Opened: {path}", 5000)
@@ -285,7 +312,7 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             self._clear_project()
             self._project_path = None
-            self.setWindowTitle("AIVideoStudio v0.4")
+            self.setWindowTitle("AIVideoStudio v0.5")
             self.status_bar.showMessage("New project created", 3000)
 
     def _clear_project(self):
@@ -365,7 +392,14 @@ class MainWindow(QMainWindow):
 
     # ── File import ──
     def _on_file_imported(self, file_path):
-        info = probe(file_path, self.config.ffprobe_path)
+        # Async probe — don't block UI
+        self.status_bar.showMessage(f"Loading: {Path(file_path).name}...", 0)
+        worker = ImportWorker(file_path, self.config.ffprobe_path)
+        worker.done.connect(self._on_import_done)
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_import_done(self, file_path, info):
         if info is None:
             self.status_bar.showMessage(f"Cannot read: {Path(file_path).name}", 5000)
             return
@@ -555,6 +589,13 @@ class MainWindow(QMainWindow):
 
     # ── Timeline sync ──
     def _on_timeline_seek(self, time_sec):
+        if time_sec < 0:
+            # Special signal: toggle play/pause
+            if self.preview._playing:
+                self.preview.pause()
+            else:
+                self.preview.play()
+            return
         self._sync_timeline_to_preview()
         self.preview.seek_to(time_sec)
 
@@ -581,6 +622,8 @@ class MainWindow(QMainWindow):
         m, s = divmod(time_sec, 60)
         self.timeline_panel.lbl_time.setText(f"{int(m)}:{s:05.2f}")
         self.playback_engine.playhead = time_sec
+        # Auto-scroll timeline to keep playhead visible
+        self.timeline_panel.ensure_playhead_visible()
 
     def closeEvent(self, e):
         s = QSettings("AVS", "AIVideoStudio")
