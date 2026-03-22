@@ -117,6 +117,7 @@ class MainWindow(QMainWindow):
         self.timeline_panel.set_undo_manager(self.undo_manager)
         self.preview.set_engine(self.playback_engine)
         self.preview.set_sync_callback(self._sync_timeline_to_preview)
+        self.export_panel.set_playback_engine(self.playback_engine)
 
     def _connect_signals(self):
         self.timeline_panel.seek_requested.connect(self._on_timeline_seek)
