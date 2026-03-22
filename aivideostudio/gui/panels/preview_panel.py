@@ -107,6 +107,7 @@ class PreviewPanel(QWidget):
                 hwdec="auto-safe",
                 keep_open="yes",
                 idle="yes",
+                hr_seek="yes",
                 log_handler=self._mpv_log,
             )
         except Exception:
@@ -124,8 +125,7 @@ class PreviewPanel(QWidget):
             self._file_loaded = True
             if self._pending_seek is not None:
                 try:
-                    self._player.command("seek", self._pending_seek,
-                                         "absolute", "keyframes")
+                    self._player.time_pos = self._pending_seek
                 except Exception as e:
                     logger.warning(f"pending seek failed: {e}")
                 self._pending_seek = None
@@ -147,7 +147,7 @@ class PreviewPanel(QWidget):
         """Load a file into mpv. If same file, just seek."""
         self._ensure_player()
         if self._loaded_path == path:
-            self._do_seek(seek_sec, exact=True)
+            self._do_seek(seek_sec)
             return
         self._file_loaded = False
         self._pending_seek = seek_sec if seek_sec > 0.1 else None
@@ -160,10 +160,9 @@ class PreviewPanel(QWidget):
             logger.error(f"loadfile failed: {e}")
 
     def _do_seek(self, sec: float, exact: bool = False):
-        """Seek within current file."""
+        """Seek within current file using time-pos property."""
         try:
-            prec = "exact" if exact else "keyframes"
-            self._player.command("seek", sec, "absolute", prec)
+            self._player.time_pos = sec
         except Exception as e:
             logger.warning(f"seek failed: {e}")
 
