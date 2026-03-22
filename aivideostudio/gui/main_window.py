@@ -298,7 +298,6 @@ class MainWindow(QMainWindow):
         if path and Path(path).exists():
             self._current_video = path
             self.subtitle_panel.set_video_path(path)
-            self.export_panel.set_input(path, clip_data.get("duration", 0.0))
         self._sync_timeline_to_preview()
 
     def _on_subtitle_ready(self, path):

@@ -179,6 +179,9 @@ class PreviewPanel(QWidget):
 
     def _do_seek(self, sec: float, exact: bool = False):
         """Seek within current file using seek command."""
+        # Images don't support seek
+        if self._loaded_path and self._is_image(self._loaded_path):
+            return
         try:
             self._player.command("seek", str(sec), "absolute", "exact")
         except Exception as e:
@@ -189,6 +192,7 @@ class PreviewPanel(QWidget):
         if not self._engine:
             return
         self._ensure_player()
+        self._sync_before_play()
         self._playing = True
         self._btn_play.setText("Pause")
 
@@ -258,9 +262,6 @@ class PreviewPanel(QWidget):
             self._image_playing = True
             self._play_start_real = _time.time()
             self._play_start_tl = self._engine.playhead
-            logger.debug(f"IMAGE clip start: tl={self._play_start_tl:.2f}, "
-                         f"dur={clip.get('duration', 0):.2f}, "
-                         f"end={clip['timeline_start'] + clip.get('duration', 0):.2f}")
             self._load_file(path, 0.0, pause=True)
             return
 
@@ -283,7 +284,7 @@ class PreviewPanel(QWidget):
                 self._player.pause = True
             except Exception:
                 pass
-        logger.debug(f"GAP start tl={self._play_start_tl:.2f}")
+
 
     # ── tick (30 fps timer) ─────────────────────────────────────
     def _tick(self):
