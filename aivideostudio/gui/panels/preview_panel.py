@@ -102,9 +102,7 @@ class PreviewPanel(QWidget):
         try:
             self._player = mpv.MPV(
                 wid=str(wid),
-                vo="gpu",
-                gpu_context="d3d11",
-                hwdec="auto-safe",
+                vo="direct3d",
                 keep_open="yes",
                 idle="yes",
                 hr_seek="yes",
@@ -157,6 +155,8 @@ class PreviewPanel(QWidget):
         """Load a file into mpv. If same file, just seek."""
         self._ensure_player()
         if self._loaded_path == path:
+            if pause:
+                self._player.pause = True
             self._do_seek(seek_sec)
             return
         self._file_loaded = False
@@ -170,10 +170,10 @@ class PreviewPanel(QWidget):
             logger.error(f"loadfile failed: {e}")
 
     def _do_seek(self, sec: float, exact: bool = False):
-        """Seek within current file using time-pos property."""
+        """Seek within current file using seek command."""
         try:
             self._seek_cmd_time = _time.time()
-            self._player.time_pos = sec
+            self._player.command("seek", str(sec), "absolute", "exact")
         except Exception as e:
             logger.warning(f"seek failed: {e}")
 
@@ -222,7 +222,10 @@ class PreviewPanel(QWidget):
             src_time = clip.get("in_point", 0) + (t - clip["timeline_start"])
             logger.info(f"SEEK: tl={t:.2f} src={src_time:.2f} loaded={self._loaded_path} clip_path={clip['path']}")
             self._load_file(clip["path"], src_time, pause=True)
-            logger.info(f"SEEK: done in {_time.time()-_t0:.3f}s")
+            try:
+                logger.info(f"SEEK: done in {_time.time()-_t0:.3f}s, mpv_pause={self._player.pause}, mpv_pos={self._player.time_pos}")
+            except:
+                logger.info(f"SEEK: done in {_time.time()-_t0:.3f}s")
             self._active_clip = clip
             self._gap_playing = False
         else:
