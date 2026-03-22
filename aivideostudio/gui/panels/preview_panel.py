@@ -125,7 +125,7 @@ class PreviewPanel(QWidget):
             if self._pending_seek is not None:
                 try:
                     self._player.command("seek", self._pending_seek,
-                                         "absolute", "exact")
+                                         "absolute", "keyframes")
                 except Exception as e:
                     logger.warning(f"pending seek failed: {e}")
                 self._pending_seek = None
@@ -208,7 +208,7 @@ class PreviewPanel(QWidget):
         t = self._engine.playhead
         clip = self._engine.clip_at(t)
         if clip:
-            src_time = clip["source_in"] + (t - clip["timeline_start"])
+            src_time = clip.get("in_point", 0) + (t - clip["timeline_start"])
             self._load_file(clip["path"], src_time, pause=True)
             self._active_clip = clip
             self._gap_playing = False
@@ -226,7 +226,7 @@ class PreviewPanel(QWidget):
         """Begin playing a clip from the correct source position."""
         self._active_clip = clip
         self._gap_playing = False
-        src_time = clip["source_in"] + (self._engine.playhead
+        src_time = clip.get("in_point", 0) + (self._engine.playhead
                                         - clip["timeline_start"])
         self._load_file(clip["path"], src_time, pause=False)
         try:
@@ -285,7 +285,7 @@ class PreviewPanel(QWidget):
         clip = self._active_clip
         src_pos = float(pos)
         # map back to timeline
-        tl_now = clip["timeline_start"] + (src_pos - clip["source_in"])
+        tl_now = clip["timeline_start"] + (src_pos - clip.get("in_point", 0))
         clip_end_tl = clip["timeline_start"] + clip["duration"]
 
         if tl_now >= clip_end_tl - 0.05:

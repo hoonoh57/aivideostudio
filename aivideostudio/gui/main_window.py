@@ -44,7 +44,6 @@ class MainWindow(QMainWindow):
         self.config = config
         self.undo_manager = UndoManager()
         self.playback_engine = TimelinePlaybackEngine()
-        self.playback_engine = TimelinePlaybackEngine()
         self.project = Project()
         self.thumb_engine = ThumbnailEngine(config.ffmpeg_path)
         self.subtitle_engine = SubtitleEngine(config.ffmpeg_path)
@@ -194,8 +193,6 @@ class MainWindow(QMainWindow):
         self.timeline_panel.add_clip(0, clip_dict)
         self._sync_timeline_to_preview()
         self.preview.seek_to(0.0)
-        self._sync_timeline_to_preview()
-        self.preview.seek_to(0.0)
 
     def _on_thumb(self, fp, tp):
         self.asset_panel.set_thumbnail(fp, tp)
@@ -220,7 +217,6 @@ class MainWindow(QMainWindow):
             self._current_video = path
             self.subtitle_panel.set_video_path(path)
             self.export_panel.set_input(path, clip_data.get("duration", 0.0))
-        self._sync_timeline_to_preview()
         self._sync_timeline_to_preview()
 
     def _on_subtitle_ready(self, path):

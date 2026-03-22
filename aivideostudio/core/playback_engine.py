@@ -89,6 +89,24 @@ class TimelinePlaybackEngine:
 
         return result
 
+
+    def clip_at(self, t):
+        """Return the video clip dict at timeline time t, or None."""
+        for track in self._tracks:
+            if track.get("type") != "video":
+                continue
+            for clip in track.get("clips", []):
+                cs = clip.get("timeline_start", 0)
+                ce = cs + clip.get("duration", 0)
+                if cs <= t < ce:
+                    return clip
+        return None
+
+    @property
+    def duration(self):
+        """Alias for total_duration (used by preview_panel)."""
+        return self._total_duration
+
     def find_next_video_time(self, after_t):
         """Find the start time of the next video clip after time t."""
         best = None
