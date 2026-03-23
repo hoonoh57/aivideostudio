@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush
 from loguru import logger
+from aivideostudio.engines.thumbnail_engine import extract_pair as _extract_thumb_pair
 
 def _qf(name, pixel_size, weight=None):
     """Create QFont with pixel size (avoids QFont pointSize <= 0 error)."""
@@ -83,6 +84,9 @@ class ClipWidget(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._alive = True
         self._waveform_peaks = None  # list of 0.0-1.0
+        self._thumb_start = None  # QPixmap
+        self._thumb_end = None    # QPixmap
+        self._thumb_requested = False
         self.update_geometry()
 
     def update_geometry(self):
@@ -109,6 +113,13 @@ class ClipWidget(QWidget):
     def set_waveform(self, peaks):
         """Set waveform peak data for this clip."""
         self._waveform_peaks = peaks
+        if self._alive:
+            self.update()
+
+    def set_thumbnails(self, start_px, end_px):
+        """Set start/end thumbnail pixmaps."""
+        self._thumb_start = start_px
+        self._thumb_end = end_px
         if self._alive:
             self.update()
 
@@ -182,12 +193,35 @@ class ClipWidget(QWidget):
                         x_pos = r.x() + 1 + int(j * step_px)
                         p.drawRect(x_pos, mid_y - half_h, bar_w, half_h * 2)
 
+        # Draw thumbnails if track height >= THUMB_MIN_HEIGHT and this is a video clip
+        _thumb_left_w = 0
+        _thumb_right_w = 0
+        if self._track_type == "video" and r.height() >= THUMB_MIN_HEIGHT - 6:
+            th_h = r.height() - 4  # thumbnail height with margin
+            if self._thumb_start and not self._thumb_start.isNull():
+                scaled = self._thumb_start.scaledToHeight(
+                    th_h, Qt.TransformationMode.SmoothTransformation)
+                tx = r.x() + 2
+                ty = r.y() + 2
+                p.drawPixmap(tx, ty, scaled)
+                _thumb_left_w = scaled.width() + 4
+            if self._thumb_end and not self._thumb_end.isNull():
+                scaled = self._thumb_end.scaledToHeight(
+                    th_h, Qt.TransformationMode.SmoothTransformation)
+                tx = r.right() - scaled.width() - 2
+                ty = r.y() + 2
+                # Only draw if it doesn't overlap start thumbnail
+                if tx > r.x() + _thumb_left_w + 4:
+                    p.drawPixmap(tx, ty, scaled)
+                    _thumb_right_w = scaled.width() + 4
+
         p.setPen(CLR_CLIP_TEXT)
         name = Path(self.clip_data.get("name", "Clip")).stem
         dur = self.clip_data.get("duration", 0)
         label = f"{name} ({dur:.1f}s)"
         p.setFont(_qf("Segoe UI", 10))
-        tr = r.adjusted(HANDLE_WIDTH + 2, 1, -HANDLE_WIDTH - 2, -1)
+        tr = r.adjusted(HANDLE_WIDTH + 2 + _thumb_left_w, 1,
+                        -HANDLE_WIDTH - 2 - _thumb_right_w, -1)
         p.drawText(tr, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
         p.end()
 
@@ -544,6 +578,9 @@ class TimelineCanvas(QWidget):
         self._next_clip_id += 1
         track["clips"].append(cw)
         cw.show()
+        # Request thumbnail extraction for video clips
+        if track["type"] == "video" and clip_data.get("path"):
+            self._request_thumbnails(cw)
         self._update_total_duration()
         self._update_size()
         self.update()
@@ -991,6 +1028,36 @@ class TimelineCanvas(QWidget):
                     cw.setMaximumHeight(th - 4)
                     cw.move(cw.x(), ty + 2)
                     cw.clip_data["track"] = i
+
+    def _request_thumbnails(self, cw):
+        """Request async thumbnail extraction for a video clip."""
+        if cw._thumb_requested:
+            return
+        path = cw.clip_data.get("path", "")
+        if not path:
+            return
+        ext = Path(path).suffix.lower()
+        image_exts = (".png", ".jpg", ".jpeg", ".bmp", ".gif",
+                      ".tiff", ".tif", ".webp", ".svg")
+        if ext in image_exts:
+            # For images, load directly as thumbnail
+            from PyQt6.QtGui import QPixmap
+            px = QPixmap(path)
+            if not px.isNull():
+                cw.set_thumbnails(px, px)
+                cw._thumb_requested = True
+            return
+        in_pt = cw.clip_data.get("in_point", 0)
+        out_pt = cw.clip_data.get("out_point",
+                    in_pt + cw.clip_data.get("duration", 1))
+        cw._thumb_requested = True
+        def on_done(start_px, end_px, w=cw):
+            try:
+                if w._alive:
+                    w.set_thumbnails(start_px, end_px)
+            except RuntimeError:
+                pass
+        _extract_thumb_pair(path, in_pt, out_pt, height=76, callback=on_done)
 
     # ── Drag & Drop ──
     def dragEnterEvent(self, event):
