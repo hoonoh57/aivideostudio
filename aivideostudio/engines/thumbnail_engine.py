@@ -69,16 +69,17 @@ def extract_thumbnail_sync(file_path, time_sec, ffmpeg="ffmpeg"):
         return None
 
 
-def extract_pair_async(file_path, in_point, out_point, callback):
+def extract_pair_async(file_path, in_point, out_point, callback, ffmpeg="ffmpeg"):
     """Extract start/end thumbnails in background thread.
     callback(start_path, end_path) is scheduled on main thread via QTimer.
     """
     path = str(file_path)
     end_time = max(in_point + 0.1, out_point - 0.1)
+    ff = ffmpeg or "ffmpeg"
 
     def worker():
-        p1 = extract_thumbnail_sync(path, in_point)
-        p2 = extract_thumbnail_sync(path, end_time)
+        p1 = extract_thumbnail_sync(path, in_point, ff)
+        p2 = extract_thumbnail_sync(path, end_time, ff)
         # Schedule callback on main thread
         QTimer.singleShot(0, lambda: _deliver(p1, p2, callback))
 
@@ -106,10 +107,10 @@ def _deliver(path1, path2, callback):
 
 
 # Legacy API compatibility
-def extract_pair(file_path, in_point, out_point, height=76, callback=None):
+def extract_pair(file_path, in_point, out_point, height=76, callback=None, ffmpeg="ffmpeg"):
     """Compatibility wrapper."""
     if callback:
-        extract_pair_async(file_path, in_point, out_point, callback)
+        extract_pair_async(file_path, in_point, out_point, callback, ffmpeg)
     return None, None
 
 

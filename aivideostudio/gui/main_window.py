@@ -188,6 +188,7 @@ class MainWindow(QMainWindow):
         self.timeline_panel.add_track("Audio 2", "audio")
         self.timeline_panel.add_track("Subtitle 1", "subtitle")
         self.timeline_panel.set_undo_manager(self.undo_manager)
+        self.timeline_panel.canvas.set_ffmpeg_path(self.config.ffmpeg_path)
         self.preview.set_engine(self.playback_engine)
         self.preview.set_sync_callback(self._sync_timeline_to_preview)
         self.export_panel.set_playback_engine(self.playback_engine)

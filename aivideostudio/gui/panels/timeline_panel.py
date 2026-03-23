@@ -502,9 +502,13 @@ class TimelineCanvas(QWidget):
         self._resizing_track = -1  # track index being resized
         self._resize_start_y = 0
         self._resize_start_h = 0
+        self._ffmpeg_path = "ffmpeg"  # set by set_ffmpeg_path()
 
     def set_undo_manager(self, um):
         self._undo_manager = um
+
+    def set_ffmpeg_path(self, path):
+        self._ffmpeg_path = path or "ffmpeg" 
 
 
     def _track_y(self, idx):
@@ -1059,7 +1063,7 @@ class TimelineCanvas(QWidget):
                     logger.debug(f"Thumbnails loaded for {w.clip_data.get('name','?')}")
             except RuntimeError:
                 pass
-        _extract_thumb_pair_async(path, in_pt, out_pt, on_done)
+        _extract_thumb_pair_async(path, in_pt, out_pt, on_done, self._ffmpeg_path)
 
     # ── Drag & Drop ──
     def dragEnterEvent(self, event):
