@@ -457,6 +457,16 @@ class TimelineCanvas(QWidget):
         """Total height of all tracks."""
         return sum(t.get("height", TRACK_HEIGHT_DEFAULT) for t in self.tracks)
 
+
+    def _near_track_separator(self, py, threshold=5):
+        """Return track index whose bottom edge is near py, or -1."""
+        y = RULER_HEIGHT
+        for i, t in enumerate(self.tracks):
+            y += t.get("height", TRACK_HEIGHT_DEFAULT)
+            if abs(py - y) <= threshold:
+                return i
+        return -1
+
     def set_tool(self, tool):
         self._tool = tool
         logger.info(f"Tool: {tool}")
