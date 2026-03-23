@@ -8,8 +8,28 @@ import tempfile
 import os
 from pathlib import Path
 from PyQt6.QtGui import QPixmap
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
 from loguru import logger
+
+
+class _ThumbSignal(QObject):
+    """Helper to deliver thumbnail callback on main thread."""
+    deliver = pyqtSignal(object, object, object)
+
+    def __init__(self):
+        super().__init__()
+        self.deliver.connect(self._on_deliver)
+
+    def _on_deliver(self, p1, p2, cb):
+        _deliver(p1, p2, cb)
+
+_thumb_signal = None
+
+def _get_signal():
+    global _thumb_signal
+    if _thumb_signal is None:
+        _thumb_signal = _ThumbSignal()
+    return _thumb_signal
 
 _cache = {}  # key: (path, time_sec) -> file_path (str)
 _pixmap_cache = {}  # key: (path, time_sec) -> QPixmap
@@ -81,7 +101,7 @@ def extract_pair_async(file_path, in_point, out_point, callback, ffmpeg="ffmpeg"
         p1 = extract_thumbnail_sync(path, in_point, ff)
         p2 = extract_thumbnail_sync(path, end_time, ff)
         # Schedule callback on main thread
-        QTimer.singleShot(0, lambda: _deliver(p1, p2, callback))
+        _get_signal().deliver.emit(p1, p2, callback)
 
     t = threading.Thread(target=worker, daemon=True)
     t.start()
