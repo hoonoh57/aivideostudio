@@ -1,6 +1,6 @@
 """Preview Panel — mpv-based, driven by TimelinePlaybackEngine.
 Supports video + audio track playback + subtitle overlay + speed control."""
-import os, sys, time as _time
+import os, sys, time as _time, tempfile
 from pathlib import Path as _Path
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
@@ -57,6 +57,8 @@ class PreviewPanel(QWidget):
         self._speed = 1.0
         self._subtitle_events = []
         self._current_sub_text = ""
+        self._ass_tmp_path = None
+        self._last_applied_style = None
         self._build_ui()
 
     @staticmethod
@@ -157,8 +159,23 @@ class PreviewPanel(QWidget):
         w = self._video_wrapper.width()
         h = self._video_wrapper.height()
         self._container.setGeometry(0, 0, w, h)
+        self._reposition_sub_label()
+
+    def _reposition_sub_label(self):
+        """Position subtitle label based on current alignment."""
+        w = self._video_wrapper.width()
+        h = self._video_wrapper.height()
         sub_h = 50
-        self._sub_label.setGeometry(20, h - sub_h - 10, w - 40, sub_h)
+        margin = 10
+        an = getattr(self, '_current_sub_alignment', 2)
+        # Vertical: top(7,8,9), middle(4,5,6), bottom(1,2,3)
+        if an in (7, 8, 9):
+            y = margin
+        elif an in (4, 5, 6):
+            y = (h - sub_h) // 2
+        else:
+            y = h - sub_h - margin
+        self._sub_label.setGeometry(20, y, w - 40, sub_h)
 
     # ── Speed control ──────────────────────────────────────────
     def _on_speed_changed(self, idx):
@@ -196,51 +213,204 @@ class PreviewPanel(QWidget):
                 self._sub_label.show()
             else:
                 self._sub_label.hide()
+        # Also update mpv ASS subtitle if available
+        self._update_mpv_ass_subtitle(tl_sec)
 
     def _apply_subtitle_style(self, style):
-        """Apply per-subtitle style to the overlay label."""
+        """Apply per-subtitle style to the overlay QLabel (visual fallback)."""
         if not style:
-            # Default style
             self._sub_label.setStyleSheet(
-                "QLabel{color:white; font-size:16px; background:rgba(0,0,0,160);"
-                "padding:4px 12px; border-radius:4px;}")
+                "QLabel{color:white; font-size:15px; background:rgba(0,0,0,160);"
+                "padding:4px 12px; border-radius:4px; font-weight:bold;"
+                "font-family:'Malgun Gothic',sans-serif;}")
+            self._current_sub_alignment = 2
+            self._reposition_sub_label()
             return
         font_name = style.get("font", "Malgun Gothic")
-        font_size = style.get("size", 16)
-        # Scale down for preview (subtitle size is for video resolution)
-        preview_size = max(10, min(font_size, 28))
+        font_size = style.get("size", 22)
+        preview_size = max(11, min(int(font_size * 0.7), 32))
         fc = style.get("font_color", "#ffffff")
         oc = style.get("outline_color", "#000000")
         bold = "bold" if style.get("bold") else "normal"
         italic = "italic" if style.get("italic") else "normal"
         underline = "underline" if style.get("underline") else "none"
-        bg = "rgba(0,0,0,160)" if style.get("bg_box") else "rgba(0,0,0,100)"
-        outline_px = min(style.get("outline_size", 2), 3)
-        shadow = f"1px 1px 2px {oc}" if style.get("shadow") else "none"
-        # Alignment: adjust label alignment
+        bg = "rgba(0,0,0,170)" if style.get("bg_box") else "rgba(0,0,0,0)"
         an = style.get("alignment", 2)
+        self._current_sub_alignment = an
+        # Text shadow via CSS
+        shadow_css = ""
+        outline_size = style.get("outline_size", 2)
+        if outline_size > 0:
+            shadow_parts = []
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if dx == 0 and dy == 0: continue
+                    shadow_parts.append(f"{dx}px {dy}px 0px {oc}")
+            shadow_css = f"text-shadow: {', '.join(shadow_parts)};"
+        if style.get("shadow"):
+            shadow_css += f" text-shadow: 2px 2px 3px rgba(0,0,0,0.8);"
+        # Horizontal alignment
         if an in (1, 4, 7):
-            align = "left"
+            h_align = "left"
         elif an in (3, 6, 9):
-            align = "right"
+            h_align = "right"
         else:
-            align = "center"
+            h_align = "center"
         self._sub_label.setStyleSheet(
             f"QLabel{{"
             f"color:{fc}; font-family:'{font_name}'; font-size:{preview_size}px;"
             f"font-weight:{bold}; font-style:{italic}; text-decoration:{underline};"
-            f"background:{bg}; padding:4px 12px; border-radius:4px;"
-            f"text-align:{align};"
+            f"background:{bg}; padding:6px 14px; border-radius:4px;"
+            f"text-align:{h_align}; {shadow_css}"
             f"}}")
+        from PyQt6.QtCore import Qt as _Qt
         if an in (1, 4, 7):
-            from PyQt6.QtCore import Qt as QtC
-            self._sub_label.setAlignment(QtC.AlignmentFlag.AlignLeft)
+            self._sub_label.setAlignment(_Qt.AlignmentFlag.AlignLeft | _Qt.AlignmentFlag.AlignVCenter)
         elif an in (3, 6, 9):
-            from PyQt6.QtCore import Qt as QtC
-            self._sub_label.setAlignment(QtC.AlignmentFlag.AlignRight)
+            self._sub_label.setAlignment(_Qt.AlignmentFlag.AlignRight | _Qt.AlignmentFlag.AlignVCenter)
         else:
-            from PyQt6.QtCore import Qt as QtC
-            self._sub_label.setAlignment(QtC.AlignmentFlag.AlignCenter)
+            self._sub_label.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+        self._reposition_sub_label()
+
+    def _generate_ass_content(self):
+        """Generate a temporary ASS file from current subtitle events with styles."""
+        if not self._subtitle_events:
+            return None
+        lines = [
+            "[Script Info]",
+            "ScriptType: v4.00+",
+            "PlayResX: 1920",
+            "PlayResY: 1080",
+            "",
+            "[V4+ Styles]",
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+            "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, MarginV, Encoding",
+            "Style: Default,Malgun Gothic,22,&H00FFFFFF,&H000000FF,"
+            "&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,20,20,30,1",
+            "",
+            "[Events]",
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+        ]
+        for ev in self._subtitle_events:
+            s = ev["start"]
+            e = ev["end"]
+            text = ev.get("text", "")
+            style = ev.get("style", {})
+            # Build ASS override tags
+            tags = []
+            if style.get("font"):
+                tags.append(f"\\fn{style['font']}")
+            if style.get("size"):
+                tags.append(f"\\fs{style['size']}")
+            if style.get("bold"):
+                tags.append("\\b1")
+            if style.get("italic"):
+                tags.append("\\i1")
+            if style.get("underline"):
+                tags.append("\\u1")
+            if style.get("font_color"):
+                c = style["font_color"].lstrip("#")
+                if len(c) == 6:
+                    r, g, b = c[0:2], c[2:4], c[4:6]
+                    tags.append(f"\\c&H{b}{g}{r}&")
+            if style.get("outline_color"):
+                c = style["outline_color"].lstrip("#")
+                if len(c) == 6:
+                    r, g, b = c[0:2], c[2:4], c[4:6]
+                    tags.append(f"\\3c&H{b}{g}{r}&")
+            if style.get("outline_size") is not None:
+                tags.append(f"\\bord{style['outline_size']}")
+            if style.get("shadow") is False:
+                tags.append("\\shad0")
+            if style.get("bg_box"):
+                tags.append("\\4a&H60&")
+            if style.get("alignment"):
+                tags.append(f"\\an{style['alignment']}")
+            # Animation
+            anim = style.get("animation_tag", "")
+            if anim and anim != "__TYPEWRITER__":
+                clean = anim.replace("{", "").replace("}", "")
+                tags.append(clean)
+            elif anim == "__TYPEWRITER__":
+                # Typewriter: reveal char by char using \k
+                dur_ms = int((e - s) * 1000)
+                char_count = max(1, len(text.replace("\\N", "")))
+                per_char = max(1, dur_ms // char_count)
+                tw_text = ""
+                for ch in text:
+                    if ch in ("\\", "{", "}"):
+                        tw_text += ch
+                    else:
+                        tw_text += f"{{\\k{per_char // 10}}}{ch}"
+                tag_prefix = "{" + "".join(tags) + "}" if tags else ""
+                text = tag_prefix + tw_text
+                tags = []  # already embedded
+            tag_str = ""
+            if tags:
+                tag_str = "{" + "".join(tags) + "}"
+            # Format time: H:MM:SS.CC
+            def fmt_ass_time(sec):
+                h = int(sec // 3600)
+                m = int((sec % 3600) // 60)
+                s2 = sec % 60
+                return f"{h}:{m:02d}:{s2:05.2f}"
+            line = (f"Dialogue: 0,{fmt_ass_time(s)},{fmt_ass_time(e)},"
+                    f"Default,,0,0,0,,{tag_str}{text}")
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _write_ass_temp(self):
+        """Write current subtitle events as a temp ASS file and return path."""
+        content = self._generate_ass_content()
+        if not content:
+            return None
+        # Use real newlines
+        content = content.replace("\\n", "\n").replace("\n", chr(10))
+        try:
+            if self._ass_tmp_path and os.path.exists(self._ass_tmp_path):
+                os.unlink(self._ass_tmp_path)
+        except Exception:
+            pass
+        try:
+            fd, path = tempfile.mkstemp(suffix=".ass", prefix="aivs_sub_")
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(content)
+            self._ass_tmp_path = path
+            return path
+        except Exception as e:
+            logger.warning(f"Failed to write temp ASS: {e}")
+            return None
+
+    def _update_mpv_ass_subtitle(self, tl_sec):
+        """Load ASS subtitle into mpv for proper rendering."""
+        pass  # mpv sub-file loading is done once via set_subtitle_events
+
+    def set_subtitle_events(self, events):
+        self._subtitle_events = events or []
+        logger.info(f"Preview: loaded {len(self._subtitle_events)} subtitle events")
+        # Generate and load ASS into mpv
+        self._load_ass_to_mpv()
+
+    def _load_ass_to_mpv(self):
+        """Generate temp ASS and load into mpv player."""
+        if not self._player:
+            return
+        # Remove existing subtitle tracks
+        try:
+            self._player.command("sub-remove")
+        except Exception:
+            pass
+        if not self._subtitle_events:
+            return
+        ass_path = self._write_ass_temp()
+        if ass_path:
+            try:
+                self._player.command("sub-add", ass_path, "select")
+                logger.info(f"mpv: ASS subtitle loaded ({len(self._subtitle_events)} events)")
+            except Exception as e:
+                logger.warning(f"mpv sub-add failed: {e}")
 
     # ── engine binding ──────────────────────────────────────────
     def set_engine(self, engine):
@@ -688,6 +858,12 @@ class PreviewPanel(QWidget):
 
     def closeEvent(self, event):
         self._timer.stop()
+        # Clean up temp ASS file
+        try:
+            if self._ass_tmp_path and os.path.exists(self._ass_tmp_path):
+                os.unlink(self._ass_tmp_path)
+        except Exception:
+            pass
         for p in (self._player, self._audio_player):
             if p:
                 try: p.terminate()

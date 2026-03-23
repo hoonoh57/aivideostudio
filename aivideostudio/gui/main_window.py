@@ -704,7 +704,7 @@ class MainWindow(QMainWindow):
 
 
     def _export_subtitles_from_timeline(self):
-        """Export current timeline subtitle clips as SRT/ASS file."""
+        """Export current timeline subtitle clips as SRT/ASS file with styles."""
         events = []
         for track in self.timeline_panel.canvas.tracks:
             if track.get("type") != "subtitle" or not track.get("enabled", True):
@@ -718,6 +718,7 @@ class MainWindow(QMainWindow):
                     "start": cd.get("timeline_start", 0),
                     "end": cd.get("timeline_start", 0) + cd.get("duration", 0),
                     "text": cd.get("subtitle_text", cd.get("name", "")),
+                    "style": cd.get("subtitle_style", {}),
                 })
         events.sort(key=lambda e: e["start"])
         if not events:
@@ -725,22 +726,38 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Export", "No subtitle clips on timeline.")
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Subtitles", "subtitles.srt",
-            "SRT (*.srt);;ASS (*.ass);;All (*.*)")
+            self, "Export Subtitles", "subtitles.ass",
+            "ASS (*.ass);;SRT (*.srt);;All (*.*)")
         if not path:
             return
         try:
             import pysubs2
+            from aivideostudio.engines.subtitle_engine import style_to_ass_tags
             subs = pysubs2.SSAFile()
+            # Set default style
+            default = subs.styles["Default"]
+            default.fontname = "Malgun Gothic"
+            default.fontsize = 22
+            default.primarycolor = pysubs2.Color(255, 255, 255)
+            default.outlinecolor = pysubs2.Color(0, 0, 0)
+            default.outline = 2
+            default.shadow = 1
+            default.alignment = 2
+            fmt = "ass" if path.endswith(".ass") else "srt"
             for ev in events:
+                text = ev["text"]
+                if fmt == "ass" and ev.get("style"):
+                    tags = style_to_ass_tags(ev["style"])
+                    if tags:
+                        text = tags + text
                 subs.append(pysubs2.SSAEvent(
                     start=int(ev["start"] * 1000),
                     end=int(ev["end"] * 1000),
-                    text=ev["text"]))
-            fmt = "ass" if path.endswith(".ass") else "srt"
+                    text=text))
             subs.save(path, format_=fmt)
-            self.status_bar.showMessage(f"Subtitles exported: {Path(path).name} ({len(events)} entries)", 5000)
-            logger.info(f"Subtitles exported: {path}")
+            self.status_bar.showMessage(
+                f"Subtitles exported: {Path(path).name} ({len(events)} entries)", 5000)
+            logger.info(f"Subtitles exported: {path} (format={fmt})")
         except Exception as e:
             self.status_bar.showMessage(f"Export failed: {e}", 5000)
             logger.error(f"Subtitle export failed: {e}")
