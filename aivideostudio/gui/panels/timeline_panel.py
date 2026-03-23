@@ -49,8 +49,8 @@ CLR_CLIP_TEXT = QColor(255, 255, 255)
 CLR_PLAYHEAD = QColor(255, 50, 50)
 
 # Zone Bar (In/Out export range)
-ZONE_BAR_HEIGHT = 10
-CLR_ZONE_BAR = QColor(40, 120, 255, 80)
+ZONE_BAR_HEIGHT = 24
+CLR_ZONE_BAR = QColor(40, 120, 255, 140)
 CLR_ZONE_HANDLE = QColor(40, 120, 255, 220)
 CLR_ZONE_BORDER = QColor(60, 150, 255, 200)
 ZONE_HANDLE_WIDTH = 8
@@ -1250,7 +1250,7 @@ class TimelineCanvas(QWidget):
         # Zone Bar (In/Out range)
         zone_y = RULER_HEIGHT
         zone_bar_rect = QRect(HEADER_WIDTH, zone_y, w - HEADER_WIDTH, ZONE_BAR_HEIGHT)
-        p.fillRect(zone_bar_rect, QColor(30, 30, 35))
+        p.fillRect(zone_bar_rect, QColor(50, 55, 65))
         if self._zone_enabled:
             zx_in = int(self._zone_in * self._pps) + HEADER_WIDTH
             z_out = self._zone_out if self._zone_out > 0 else self._total_duration
@@ -1259,15 +1259,15 @@ class TimelineCanvas(QWidget):
             p.fillRect(zone_sel, CLR_ZONE_BAR)
             p.setPen(QPen(CLR_ZONE_BORDER, 1))
             p.drawRect(zone_sel)
-            p.fillRect(QRect(zx_in - 3, zone_y, 6, ZONE_BAR_HEIGHT), CLR_ZONE_HANDLE)
+            p.fillRect(QRect(zx_in - 5, zone_y, 10, ZONE_BAR_HEIGHT), CLR_ZONE_HANDLE)
             p.setPen(QColor(255, 255, 255))
-            p.setFont(_qf("Segoe UI", 7))
+            p.setFont(_qf("Segoe UI", 9))
             p.drawText(zx_in + 4, zone_y + 8, "I")
-            p.fillRect(QRect(zx_out - 3, zone_y, 6, ZONE_BAR_HEIGHT), CLR_ZONE_HANDLE)
+            p.fillRect(QRect(zx_out - 5, zone_y, 10, ZONE_BAR_HEIGHT), CLR_ZONE_HANDLE)
             p.drawText(zx_out - 10, zone_y + 8, "O")
         else:
             p.setPen(QColor(80, 80, 90))
-            p.setFont(_qf("Segoe UI", 8))
+            p.setFont(_qf("Segoe UI", 10))
             p.drawText(zone_bar_rect, Qt.AlignmentFlag.AlignCenter,
                        "Press I / O to set export range")
 
@@ -1294,11 +1294,11 @@ class TimelineCanvas(QWidget):
             pos = event.pos()
             # Zone handle detection
             if self._zone_enabled:
-                if self._zone_in_handle_rect().adjusted(-4, 0, 4, 0).contains(pos):
+                if self._zone_in_handle_rect().adjusted(-6, 0, 6, 0).contains(pos):
                     self._dragging_zone_in = True
                     event.accept()
                     return
-                if self._zone_out_handle_rect().adjusted(-4, 0, 4, 0).contains(pos):
+                if self._zone_out_handle_rect().adjusted(-6, 0, 6, 0).contains(pos):
                     self._dragging_zone_out = True
                     event.accept()
                     return
@@ -1370,8 +1370,8 @@ class TimelineCanvas(QWidget):
             return
         # Zone handle cursor
         if self._zone_enabled:
-            if (self._zone_in_handle_rect().adjusted(-4, 0, 4, 0).contains(pos) or
-                    self._zone_out_handle_rect().adjusted(-4, 0, 4, 0).contains(pos)):
+            if (self._zone_in_handle_rect().adjusted(-6, 0, 6, 0).contains(pos) or
+                    self._zone_out_handle_rect().adjusted(-6, 0, 6, 0).contains(pos)):
                 self.setCursor(Qt.CursorShape.SizeHorCursor)
             elif self._zone_bar_rect().contains(pos):
                 self.setCursor(Qt.CursorShape.PointingHandCursor)
