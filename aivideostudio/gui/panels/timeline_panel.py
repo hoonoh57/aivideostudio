@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush
 from loguru import logger
-from aivideostudio.engines.thumbnail_engine import extract_pair as _extract_thumb_pair
+from aivideostudio.engines.thumbnail_engine import extract_pair_async as _extract_thumb_pair_async
 
 def _qf(name, pixel_size, weight=None):
     """Create QFont with pixel size (avoids QFont pointSize <= 0 error)."""
@@ -1020,14 +1020,16 @@ class TimelineCanvas(QWidget):
     def _reposition_all_clips(self):
         """Reposition all clip widgets after track add/remove/resize."""
         for i, track in enumerate(self.tracks):
-            th = track.get("height", TRACK_HEIGHT)
+            th = track.get("height", TRACK_HEIGHT_DEFAULT)
             ty = self._track_y(i)
             for cw in track["clips"]:
                 if cw._alive:
                     cw.setMinimumHeight(th - 4)
                     cw.setMaximumHeight(th - 4)
+                    cw.resize(cw.width(), th - 4)
                     cw.move(cw.x(), ty + 2)
                     cw.clip_data["track"] = i
+                    cw.update()
 
     def _request_thumbnails(self, cw):
         """Request async thumbnail extraction for a video clip."""
@@ -1040,7 +1042,6 @@ class TimelineCanvas(QWidget):
         image_exts = (".png", ".jpg", ".jpeg", ".bmp", ".gif",
                       ".tiff", ".tif", ".webp", ".svg")
         if ext in image_exts:
-            # For images, load directly as thumbnail
             from PyQt6.QtGui import QPixmap
             px = QPixmap(path)
             if not px.isNull():
@@ -1055,9 +1056,10 @@ class TimelineCanvas(QWidget):
             try:
                 if w._alive:
                     w.set_thumbnails(start_px, end_px)
+                    logger.debug(f"Thumbnails loaded for {w.clip_data.get('name','?')}")
             except RuntimeError:
                 pass
-        _extract_thumb_pair(path, in_pt, out_pt, height=76, callback=on_done)
+        _extract_thumb_pair_async(path, in_pt, out_pt, on_done)
 
     # ── Drag & Drop ──
     def dragEnterEvent(self, event):
