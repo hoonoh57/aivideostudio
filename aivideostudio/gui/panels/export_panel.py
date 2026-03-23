@@ -1,4 +1,4 @@
-"""Export Panel — timeline-based export with FFmpeg + NVENC + audio mixing."""
+"""Export Panel - timeline-based export with FFmpeg + NVENC + audio mixing."""
 import os
 import re
 import shutil
@@ -53,6 +53,7 @@ class ExportPanel(QWidget):
         self._subtitle_path = None
         self._process = None
         self._playback_engine = None
+        self._timeline_canvas = None
         self._sig = ExportSignals()
         self._sig.progress.connect(self._on_progress)
         self._sig.status.connect(self._on_status)
@@ -63,7 +64,7 @@ class ExportPanel(QWidget):
     def _build_ui(self):
         lay = QVBoxLayout(self)
 
-        # ── Preset ──
+        # Preset
         preset_grp = QGroupBox("Export Settings")
         preset_lay = QVBoxLayout(preset_grp)
 
@@ -71,11 +72,21 @@ class ExportPanel(QWidget):
         row.addWidget(QLabel("Preset:"))
         self.combo_preset = QComboBox()
         self.combo_preset.addItems(PRESETS.keys())
-        # Default to NVENC 1080p
         idx = list(PRESETS.keys()).index("YouTube 1080p NVENC") if "YouTube 1080p NVENC" in PRESETS else 0
         self.combo_preset.setCurrentIndex(idx)
         row.addWidget(self.combo_preset)
         preset_lay.addLayout(row)
+
+        # Export Range
+        range_row = QHBoxLayout()
+        range_row.addWidget(QLabel("Range:"))
+        self.combo_range = QComboBox()
+        self.combo_range.addItems(["Full Timeline", "In-Out Range"])
+        range_row.addWidget(self.combo_range)
+        self.lbl_range_info = QLabel("")
+        self.lbl_range_info.setStyleSheet("color: #88aaff; font-size: 11px;")
+        range_row.addWidget(self.lbl_range_info)
+        preset_lay.addLayout(range_row)
 
         # Options
         self.chk_burn = QCheckBox("Burn subtitles into video")
@@ -91,7 +102,7 @@ class ExportPanel(QWidget):
 
         lay.addWidget(preset_grp)
 
-        # ── Info ──
+        # Info
         info_grp = QGroupBox("Source Info")
         info_lay = QVBoxLayout(info_grp)
         self.lbl_input = QLabel("Input: (none)")
@@ -102,7 +113,7 @@ class ExportPanel(QWidget):
         info_lay.addWidget(self.lbl_dur)
         lay.addWidget(info_grp)
 
-        # ── Buttons ──
+        # Buttons
         row_btn = QHBoxLayout()
         self.btn_export = QPushButton("Export Timeline")
         self.btn_export.setStyleSheet(
@@ -120,7 +131,9 @@ class ExportPanel(QWidget):
         row_btn.addWidget(self.btn_cancel)
         lay.addLayout(row_btn)
 
-        # ── Progress ──
+        self.combo_range.currentIndexChanged.connect(lambda: self.update_range_info())
+
+        # Progress
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setVisible(False)
@@ -131,7 +144,34 @@ class ExportPanel(QWidget):
         lay.addWidget(self.lbl_status)
         lay.addStretch()
 
-    # ── external API ──
+    # External API
+    def set_timeline_canvas(self, canvas):
+        """Connect to TimelineCanvas for zone (In/Out) range."""
+        self._timeline_canvas = canvas
+
+    def _get_export_range(self):
+        """Return (start_sec, end_sec) or None for full timeline."""
+        if self.combo_range.currentText() == "In-Out Range":
+            if self._timeline_canvas:
+                z_in, z_out, enabled = self._timeline_canvas.get_zone()
+                if enabled and z_out > z_in:
+                    return (z_in, z_out)
+        return None
+
+    def update_range_info(self):
+        """Update the range info label from zone state."""
+        if self._timeline_canvas:
+            z_in, z_out, enabled = self._timeline_canvas.get_zone()
+            if enabled and z_out > z_in:
+                dur = z_out - z_in
+                m_in, s_in = divmod(int(z_in), 60)
+                m_out, s_out = divmod(int(z_out), 60)
+                m_d, s_d = divmod(int(dur), 60)
+                self.lbl_range_info.setText(
+                    f"[{m_in}:{s_in:02d} \u2192 {m_out}:{s_out:02d}] ({m_d}:{s_d:02d})")
+                return
+        self.lbl_range_info.setText("")
+
     def set_playback_engine(self, engine):
         self._playback_engine = engine
 
@@ -149,7 +189,7 @@ class ExportPanel(QWidget):
             self._subtitle_path = str(path)
             self.lbl_sub.setText("Subtitle: " + _Path(path).name)
 
-    # ── export logic ──
+    # Export logic
     def _on_export(self):
         segments = self._get_video_segments()
         if not segments:
@@ -157,7 +197,35 @@ class ExportPanel(QWidget):
                                 "No clips on timeline.\nAdd clips to timeline first.")
             return
 
-        total_dur = max(s["timeline_end"] for s in segments)
+        # Apply export range filter
+        export_range = self._get_export_range()
+        if export_range:
+            range_start, range_end = export_range
+            filtered = []
+            for seg in segments:
+                s_start = seg["timeline_start"]
+                s_end = seg["timeline_end"]
+                if s_end <= range_start or s_start >= range_end:
+                    continue
+                new_seg = dict(seg)
+                if s_start < range_start:
+                    trim = range_start - s_start
+                    new_seg["in_point"] = seg.get("in_point", 0) + trim
+                    new_seg["timeline_start"] = range_start
+                if s_end > range_end:
+                    new_seg["timeline_end"] = range_end
+                new_seg["timeline_start"] -= range_start
+                new_seg["timeline_end"] -= range_start
+                filtered.append(new_seg)
+            segments = filtered
+            if not segments:
+                QMessageBox.warning(self, "Export Error",
+                                    "No clips in the In-Out range.")
+                return
+            total_dur = max(s["timeline_end"] for s in segments)
+        else:
+            total_dur = max(s["timeline_end"] for s in segments)
+
         output, _ = QFileDialog.getSaveFileName(
             self, "Save Export", "timeline_export.mp4", "Video (*.mp4)")
         if not output:
@@ -170,7 +238,6 @@ class ExportPanel(QWidget):
         use_gpu = preset.get("gpu", False)
         mix_audio = self.chk_mix_audio.isChecked()
 
-        # Get audio segments
         audio_segments = []
         if mix_audio and self._playback_engine and hasattr(self._playback_engine, "get_ordered_audio_segments"):
             audio_segments = self._playback_engine.get_ordered_audio_segments()
@@ -216,7 +283,6 @@ class ExportPanel(QWidget):
             vcodec = self._get_vcodec(use_gpu, preset)
             num_segs = len(video_segs)
 
-            # Build scale filter
             scale_vf = ""
             if pw > 0 and ph > 0:
                 if crop and ph > pw:
@@ -225,7 +291,7 @@ class ExportPanel(QWidget):
                     scale_vf = (f"scale={pw}:{ph}:force_original_aspect_ratio=decrease,"
                                 f"pad={pw}:{ph}:(ow-iw)/2:(oh-ih)/2:black")
 
-            # ── Step 1: Encode each video segment ──
+            # Step 1: Encode each video segment
             part_files = []
             for i, seg in enumerate(video_segs):
                 pct = int(i / num_segs * 40)
@@ -280,7 +346,7 @@ class ExportPanel(QWidget):
                 self._sig.error.emit("No segments were created.")
                 return
 
-            # ── Step 2: Insert gaps (black segments) ──
+            # Step 2: Insert gaps
             final_parts = []
             for i, seg in enumerate(video_segs):
                 gap_start = seg["timeline_start"]
@@ -299,7 +365,7 @@ class ExportPanel(QWidget):
                             final_parts.append(gap_path)
                 final_parts.append(part_files[i])
 
-            # ── Step 3: Concat video ──
+            # Step 3: Concat
             self._sig.status.emit("Concatenating video...")
             self._sig.progress.emit(50)
 
@@ -327,7 +393,7 @@ class ExportPanel(QWidget):
 
             current_video = concat_out
 
-            # ── Step 4: Mix audio tracks ──
+            # Step 4: Mix audio
             if need_audio_mix:
                 self._sig.status.emit("Mixing audio tracks...")
                 self._sig.progress.emit(65)
@@ -336,7 +402,7 @@ class ExportPanel(QWidget):
                 if ok and _Path(mixed).exists():
                     current_video = mixed
 
-            # ── Step 5: Burn subtitles ──
+            # Step 5: Burn subtitles
             if need_subtitle:
                 self._sig.status.emit("Burning subtitles...")
                 self._sig.progress.emit(80)
@@ -367,10 +433,9 @@ class ExportPanel(QWidget):
                     os.remove(temp_sub)
                 current_video = sub_out
             elif current_video != output:
-                # Copy to final output
                 shutil.copy2(current_video, output)
 
-            # ── Done ──
+            # Done
             self._sig.progress.emit(100)
             if _Path(output).exists():
                 mb = _Path(output).stat().st_size / (1024 * 1024)
@@ -391,49 +456,36 @@ class ExportPanel(QWidget):
                 pass
 
     def _mix_audio(self, video_path, audio_segs, output, total_dur, vcodec):
-        """Mix audio track clips into the video using ffmpeg amerge/amix."""
         if not audio_segs:
             return False
-
         tmpdir = os.path.dirname(output)
-
-        # Build a complex filter to delay and mix each audio segment
-        inputs = ["-i", video_path]  # input 0 = video with its own audio
+        inputs = ["-i", video_path]
         filter_parts = []
         audio_labels = []
-
-        # Original audio from video
         filter_parts.append("[0:a]aresample=44100[orig]")
         audio_labels.append("[orig]")
-
         for i, seg in enumerate(audio_segs):
             inp_idx = i + 1
             inputs += ["-i", seg["path"]]
             delay_ms = int(seg["timeline_start"] * 1000)
             in_pt = seg.get("in_point", 0)
             dur = seg["timeline_end"] - seg["timeline_start"]
-
             label = f"[a{i}]"
-            # Trim, delay, pad
             f = (f"[{inp_idx}:a]atrim=start={in_pt}:duration={dur},"
                  f"asetpts=PTS-STARTPTS,"
                  f"adelay={delay_ms}|{delay_ms},"
                  f"aresample=44100{label}")
             filter_parts.append(f)
             audio_labels.append(label)
-
-        # Amix all
         n = len(audio_labels)
         mix_inputs = "".join(audio_labels)
         filter_parts.append(f"{mix_inputs}amix=inputs={n}:duration=longest:dropout_transition=0[aout]")
         filter_complex = ";".join(filter_parts)
-
         cmd = [self._ffmpeg, "-y", "-hide_banner"] + inputs
         cmd += ["-filter_complex", filter_complex,
                 "-map", "0:v", "-map", "[aout]",
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
                 "-shortest", output]
-
         logger.info(f"Audio mix: {len(audio_segs)} audio clips")
         try:
             self._process = subprocess.Popen(
@@ -443,7 +495,6 @@ class ExportPanel(QWidget):
             if self._process.returncode != 0:
                 stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
                 logger.warning(f"Audio mix failed (non-fatal): {stderr[-300:]}")
-                # Fallback: just copy video without mixing
                 shutil.copy2(video_path, output)
                 return True
         except Exception as e:
@@ -461,7 +512,7 @@ class ExportPanel(QWidget):
                              creationflags=0x08000000)
         p.communicate()
 
-    # ── UI callbacks ──
+    # UI callbacks
     def _on_progress(self, v):
         self.progress.setValue(v)
 

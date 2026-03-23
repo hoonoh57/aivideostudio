@@ -193,6 +193,8 @@ class MainWindow(QMainWindow):
         self.preview.set_sync_callback(self._sync_timeline_to_preview)
         self.export_panel.set_playback_engine(self.playback_engine)
 
+        self.export_panel.set_timeline_canvas(self.timeline_panel.canvas)
+
     # ── Signals ──
     def _connect_signals(self):
         self.timeline_panel.seek_requested.connect(self._on_timeline_seek)
