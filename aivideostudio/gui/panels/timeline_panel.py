@@ -298,6 +298,13 @@ class ClipWidget(QWidget):
 
     def mouseDoubleClickEvent(self, event):
         if self._alive:
+            if self._track_type == "subtitle":
+                # Direct inline text editing for subtitle clips
+                p = self.parent()
+                if p and hasattr(p, "_edit_subtitle_text"):
+                    p._edit_subtitle_text(self)
+                    event.accept()
+                    return
             self.double_clicked.emit(self)
             event.accept()
 
@@ -307,6 +314,15 @@ class ClipWidget(QWidget):
         menu = QMenu(self)
         act_del = menu.addAction("Delete Clip")
         act_split = menu.addAction("Split Here")
+
+        # Subtitle-specific actions
+        act_edit_text = None
+        act_merge_next = None
+        if self._track_type == "subtitle":
+            menu.addSeparator()
+            act_edit_text = menu.addAction("Edit Subtitle Text...")
+            act_merge_next = menu.addAction("Merge with Next Subtitle")
+
         action = menu.exec(event.globalPos())
         if action == act_del:
             p = self.parent()
@@ -317,7 +333,18 @@ class ClipWidget(QWidget):
             if p and hasattr(p, "_razor_clip_at"):
                 local_x = event.pos().x()
                 cut_time = self.clip_data.get("timeline_start", 0) + local_x / self._pps
-                p._razor_clip_at(self, cut_time)
+                if self._track_type == "subtitle":
+                    p._split_subtitle_clip(self)
+                else:
+                    p._razor_clip_at(self, cut_time)
+        elif act_edit_text and action == act_edit_text:
+            p = self.parent()
+            if p and hasattr(p, "_edit_subtitle_text"):
+                p._edit_subtitle_text(self)
+        elif act_merge_next and action == act_merge_next:
+            p = self.parent()
+            if p and hasattr(p, "_merge_subtitle_clip"):
+                p._merge_subtitle_clip(self)
 
 
 class TimelineCanvas(QWidget):
@@ -432,7 +459,11 @@ class TimelineCanvas(QWidget):
             self._playhead = start
             self.playhead_moved.emit(self._playhead)
             self.seek_requested.emit(start)
-            self.clip_double_clicked.emit(cw.clip_data)
+            # If subtitle clip, open inline text editor
+            if cw._track_type == "subtitle" and cw.clip_data.get("subtitle_text"):
+                self._edit_subtitle_text(cw)
+            else:
+                self.clip_double_clicked.emit(cw.clip_data)
             self.update()
 
     def _on_clip_moved(self, cw):
@@ -445,6 +476,9 @@ class TimelineCanvas(QWidget):
         self.update()
         if cw._alive:
             self.clip_selected.emit(cw.clip_data)
+            # If subtitle clip was trimmed, refresh subtitle overlay
+            if cw._track_type == "subtitle":
+                self._notify_subtitle_changed()
 
     def _try_snap(self, cw):
         self._snap_lines = []
@@ -566,6 +600,188 @@ class TimelineCanvas(QWidget):
                             cv.remove_clip_widget(c)
                             return
             self._undo_manager.push(f"Delete {dd.get('name','clip')}", undo_del, redo_del)
+
+
+    # ── Subtitle Editing Methods ──────────────────────────────
+    def _edit_subtitle_text(self, cw):
+        """Open dialog to edit subtitle clip text."""
+        old_text = cw.clip_data.get("subtitle_text", "")
+        win = self.window()
+        new_text, ok = QInputDialog.getMultiLineText(
+            win, "Edit Subtitle", "Subtitle text:", old_text)
+        if ok and new_text != old_text:
+            old_name = cw.clip_data.get("name", "")
+            cw.clip_data["subtitle_text"] = new_text
+            cw.clip_data["name"] = new_text[:30] + ("..." if len(new_text) > 30 else "")
+            cw.update()
+            self._notify_subtitle_changed()
+            if self._undo_manager:
+                cid = getattr(cw, '_clip_id', -1)
+                cv = self
+                ot, on = old_text, old_name
+                nt, nn = new_text, cw.clip_data["name"]
+                def undo_e():
+                    for t in cv.tracks:
+                        for c in t["clips"]:
+                            try:
+                                if not c._alive: continue
+                            except RuntimeError: continue
+                            if getattr(c, '_clip_id', -1) == cid:
+                                c.clip_data["subtitle_text"] = ot
+                                c.clip_data["name"] = on
+                                c.update(); cv._notify_subtitle_changed(); return
+                def redo_e():
+                    for t in cv.tracks:
+                        for c in t["clips"]:
+                            try:
+                                if not c._alive: continue
+                            except RuntimeError: continue
+                            if getattr(c, '_clip_id', -1) == cid:
+                                c.clip_data["subtitle_text"] = nt
+                                c.clip_data["name"] = nn
+                                c.update(); cv._notify_subtitle_changed(); return
+                self._undo_manager.push("Edit Subtitle", undo_e, redo_e)
+            logger.info(f"Subtitle edited: '{old_text[:20]}' -> '{new_text[:20]}'")
+
+    def _split_subtitle_clip(self, cw):
+        """Split subtitle clip in half, dividing text at word boundary."""
+        text = cw.clip_data.get("subtitle_text", "")
+        if not text:
+            return
+        start = cw.clip_data.get("timeline_start", 0)
+        dur = cw.clip_data.get("duration", 0)
+        if dur < 0.2:
+            return
+        half = dur / 2.0
+        words = text.split()
+        if len(words) >= 2:
+            mid = len(words) // 2
+            t1, t2 = " ".join(words[:mid]), " ".join(words[mid:])
+        else:
+            mc = len(text) // 2
+            t1, t2 = text[:mc].strip(), text[mc:].strip()
+        if not t1: t1 = t2[:len(t2)//2]; t2 = t2[len(t2)//2:]
+        track_idx = -1
+        for i, track in enumerate(self.tracks):
+            if cw in track["clips"]:
+                track_idx = i; break
+        if track_idx < 0: return
+        in_pt = cw.clip_data.get("in_point", 0)
+        path = cw.clip_data.get("path", "")
+        old_data = dict(cw.clip_data)
+        c1d = {"name": t1[:30], "path": path, "timeline_start": start,
+               "duration": half, "in_point": in_pt, "out_point": in_pt + half,
+               "source_duration": half, "track": track_idx, "subtitle_text": t1}
+        c2d = {"name": t2[:30], "path": path, "timeline_start": start + half,
+               "duration": dur - half, "in_point": in_pt + half, "out_point": in_pt + dur,
+               "source_duration": dur - half, "track": track_idx, "subtitle_text": t2}
+        self._safe_deselect()
+        self.remove_clip_widget(cw)
+        cw1 = self.add_clip(track_idx, c1d)
+        cw2 = self.add_clip(track_idx, c2d)
+        self._notify_subtitle_changed()
+        if self._undo_manager:
+            ti, od = track_idx, dict(old_data)
+            i1 = cw1._clip_id if cw1 else -1
+            i2 = cw2._clip_id if cw2 else -1
+            d1, d2, cv = dict(c1d), dict(c2d), self
+            def undo_ss():
+                for t in cv.tracks:
+                    for c in list(t["clips"]):
+                        try:
+                            if not c._alive: continue
+                        except RuntimeError: continue
+                        if getattr(c, '_clip_id', -1) in (i1, i2):
+                            cv.remove_clip_widget(c)
+                cv.add_clip(ti, od); cv._notify_subtitle_changed(); cv.update()
+            def redo_ss():
+                for t in cv.tracks:
+                    for c in list(t["clips"]):
+                        try:
+                            if not c._alive: continue
+                        except RuntimeError: continue
+                        ts = c.clip_data.get("timeline_start", -1)
+                        if abs(ts - od["timeline_start"]) < 0.01:
+                            cv.remove_clip_widget(c)
+                r1 = cv.add_clip(ti, d1); r2 = cv.add_clip(ti, d2)
+                if r1: r1._clip_id = i1
+                if r2: r2._clip_id = i2
+                cv._notify_subtitle_changed(); cv.update()
+            self._undo_manager.push("Split Subtitle", undo_ss, redo_ss)
+        logger.info(f"Subtitle split: '{text[:20]}' -> 2 clips")
+
+    def _merge_subtitle_clip(self, cw):
+        """Merge this subtitle clip with the next one on the same track."""
+        track_idx = -1
+        for i, track in enumerate(self.tracks):
+            if cw in track["clips"]:
+                track_idx = i; break
+        if track_idx < 0: return
+        track = self.tracks[track_idx]
+        cw_start = cw.clip_data.get("timeline_start", 0)
+        next_cw = None
+        min_start = float("inf")
+        for other in track["clips"]:
+            if other is cw or not other._alive: continue
+            os = other.clip_data.get("timeline_start", 0)
+            if os > cw_start and os < min_start:
+                min_start = os; next_cw = other
+        if next_cw is None:
+            logger.warning("No next subtitle clip to merge"); return
+        t1 = cw.clip_data.get("subtitle_text", cw.clip_data.get("name", ""))
+        t2 = next_cw.clip_data.get("subtitle_text", next_cw.clip_data.get("name", ""))
+        merged_text = f"{t1} {t2}".strip()
+        next_end = next_cw.clip_data.get("timeline_start", 0) + next_cw.clip_data.get("duration", 0)
+        new_dur = next_end - cw_start
+        o1, o2 = dict(cw.clip_data), dict(next_cw.clip_data)
+        id1 = getattr(cw, '_clip_id', -1)
+        id2 = getattr(next_cw, '_clip_id', -1)
+        md = {"name": merged_text[:30], "path": cw.clip_data.get("path", ""),
+              "timeline_start": cw_start, "duration": new_dur,
+              "in_point": cw.clip_data.get("in_point", 0),
+              "out_point": cw.clip_data.get("in_point", 0) + new_dur,
+              "source_duration": new_dur, "track": track_idx,
+              "subtitle_text": merged_text}
+        self._safe_deselect()
+        self.remove_clip_widget(cw)
+        self.remove_clip_widget(next_cw)
+        mcw = self.add_clip(track_idx, md)
+        self._notify_subtitle_changed()
+        if self._undo_manager:
+            ti, cv = track_idx, self
+            mid = mcw._clip_id if mcw else -1
+            d1, d2, dm = dict(o1), dict(o2), dict(md)
+            def undo_mg():
+                for t in cv.tracks:
+                    for c in list(t["clips"]):
+                        try:
+                            if not c._alive: continue
+                        except RuntimeError: continue
+                        if getattr(c, '_clip_id', -1) == mid:
+                            cv.remove_clip_widget(c)
+                r1 = cv.add_clip(ti, d1); r2 = cv.add_clip(ti, d2)
+                if r1: r1._clip_id = id1
+                if r2: r2._clip_id = id2
+                cv._notify_subtitle_changed(); cv.update()
+            def redo_mg():
+                for t in cv.tracks:
+                    for c in list(t["clips"]):
+                        try:
+                            if not c._alive: continue
+                        except RuntimeError: continue
+                        if getattr(c, '_clip_id', -1) in (id1, id2):
+                            cv.remove_clip_widget(c)
+                r = cv.add_clip(ti, dm)
+                if r: r._clip_id = mid
+                cv._notify_subtitle_changed(); cv.update()
+            self._undo_manager.push("Merge Subtitles", undo_mg, redo_mg)
+        logger.info(f"Merged: '{t1[:15]}' + '{t2[:15]}'")
+
+    def _notify_subtitle_changed(self):
+        """Refresh subtitle overlay in preview."""
+        win = self.window()
+        if win and hasattr(win, '_refresh_subtitle_overlay'):
+            win._refresh_subtitle_overlay()
 
     def _show_track_menu(self, track_idx, global_pos):
         """Right-click context menu on track header."""

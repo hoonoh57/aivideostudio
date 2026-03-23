@@ -565,6 +565,7 @@ class MainWindow(QMainWindow):
             self._current_video = path
             self.subtitle_panel.set_video_path(path)
         self._sync_timeline_to_preview()
+        self._refresh_subtitle_overlay()
 
     def _on_subtitle_ready(self, path):
         self.export_panel.set_subtitle(path)
@@ -624,6 +625,49 @@ class MainWindow(QMainWindow):
         self.playback_engine.playhead = time_sec
         # Auto-scroll timeline to keep playhead visible
         self.timeline_panel.ensure_playhead_visible()
+
+
+    def _export_subtitles_from_timeline(self):
+        """Export current timeline subtitle clips as SRT/ASS file."""
+        events = []
+        for track in self.timeline_panel.canvas.tracks:
+            if track.get("type") != "subtitle" or not track.get("enabled", True):
+                continue
+            for cw in track["clips"]:
+                try:
+                    if not cw._alive: continue
+                except (RuntimeError, AttributeError): continue
+                cd = cw.clip_data
+                events.append({
+                    "start": cd.get("timeline_start", 0),
+                    "end": cd.get("timeline_start", 0) + cd.get("duration", 0),
+                    "text": cd.get("subtitle_text", cd.get("name", "")),
+                })
+        events.sort(key=lambda e: e["start"])
+        if not events:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Export", "No subtitle clips on timeline.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Subtitles", "subtitles.srt",
+            "SRT (*.srt);;ASS (*.ass);;All (*.*)")
+        if not path:
+            return
+        try:
+            import pysubs2
+            subs = pysubs2.SSAFile()
+            for ev in events:
+                subs.append(pysubs2.SSAEvent(
+                    start=int(ev["start"] * 1000),
+                    end=int(ev["end"] * 1000),
+                    text=ev["text"]))
+            fmt = "ass" if path.endswith(".ass") else "srt"
+            subs.save(path, format_=fmt)
+            self.status_bar.showMessage(f"Subtitles exported: {Path(path).name} ({len(events)} entries)", 5000)
+            logger.info(f"Subtitles exported: {path}")
+        except Exception as e:
+            self.status_bar.showMessage(f"Export failed: {e}", 5000)
+            logger.error(f"Subtitle export failed: {e}")
 
     def closeEvent(self, e):
         s = QSettings("AVS", "AIVideoStudio")
