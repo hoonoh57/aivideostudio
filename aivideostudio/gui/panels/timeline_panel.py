@@ -457,7 +457,7 @@ class ClipWidget(QWidget):
             act_edit_text = menu.addAction("Edit Subtitle Text...")
             act_merge_next = menu.addAction("Merge with Next Subtitle")
 
-        action = menu.exec(event.globalPosition().toPoint())
+        action = menu.exec(event.globalPos())
         if action == act_del:
             p = self.parent()
             if p and hasattr(p, "remove_clip_widget"):
@@ -1100,6 +1100,10 @@ class TimelineCanvas(QWidget):
                         return
                 except RuntimeError:
                     pass
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat('application/x-aivideo-asset') or event.mimeData().hasText():
+            event.acceptProposedAction()
+
     def dragMoveEvent(self, event):
         event.acceptProposedAction()
 

@@ -531,6 +531,23 @@ class MainWindow(QMainWindow):
             track_idx = 0
         time_sec = max(0.0, time_sec)
 
+        # Auto-match file type to correct track type
+        AUDIO_EXTS = ('.mp3','.wav','.aac','.flac','.ogg','.m4a','.wma')
+        VIDEO_EXTS = ('.mp4','.avi','.mkv','.mov','.wmv','.flv','.webm','.m4v','.mpg','.mpeg')
+        IMAGE_EXTS = ('.png','.jpg','.jpeg','.bmp','.gif','.tiff','.tif','.webp','.svg')
+        tracks = self.timeline_panel.canvas.tracks
+        drop_type = tracks[track_idx]['type'] if track_idx < len(tracks) else 'video'
+        if ext in AUDIO_EXTS and drop_type != 'audio':
+            # Find first audio track
+            for ti, t in enumerate(tracks):
+                if t['type'] == 'audio':
+                    track_idx = ti; break
+        elif ext in VIDEO_EXTS or ext in IMAGE_EXTS:
+            if drop_type != 'video':
+                for ti, t in enumerate(tracks):
+                    if t['type'] == 'video':
+                        track_idx = ti; break
+
         # Subtitle auto-split on subtitle track
         if ext in SUBTITLE_EXTS and self.timeline_panel.canvas.tracks[track_idx]["type"] == "subtitle":
             count = self._auto_split_subtitle(file_path, track_idx)
