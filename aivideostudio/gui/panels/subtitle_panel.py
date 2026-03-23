@@ -118,7 +118,10 @@ class SubtitlePanel(QWidget):
         row_font = QHBoxLayout()
         row_font.addWidget(QLabel("Font:"))
         self.font_combo = QFontComboBox()
-        self.font_combo.setCurrentFont(QFont(self._font_name))
+        _init_font = QFont()
+        _init_font.setFamily(self._font_name)
+        _init_font.setPixelSize(max(1, self._font_size))
+        self.font_combo.setCurrentFont(_init_font)
         self.font_combo.currentFontChanged.connect(self._on_font_changed)
         row_font.addWidget(self.font_combo)
         row_font.addWidget(QLabel("Size:"))
@@ -169,6 +172,9 @@ class SubtitlePanel(QWidget):
 
     def _on_font_changed(self, font):
         self._font_name = font.family()
+        # Ensure font has valid pixel size (avoid QFont pointSize <= 0 warning)
+        if font.pointSize() <= 0 and font.pixelSize() <= 0:
+            font.setPixelSize(max(1, self._font_size))
         self._update_preview_style()
 
     def _on_size_changed(self, value):

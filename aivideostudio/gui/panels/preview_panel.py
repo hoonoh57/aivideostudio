@@ -23,6 +23,15 @@ if _dll.exists():
 
 import mpv  # noqa: E402
 
+def _qf(name, pixel_size, weight=None):
+    """Create QFont with pixel size (avoids QFont pointSize <= 0 warning)."""
+    f = QFont()
+    f.setFamily(name)
+    f.setPixelSize(max(1, pixel_size))
+    if weight is not None:
+        f.setWeight(weight)
+    return f
+
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff",
                ".tif", ".webp", ".svg"}
 _AUDIO_EXTS = {".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a", ".wma"}
@@ -250,7 +259,7 @@ class PreviewPanel(QWidget):
         font_name = style.get("font", "Malgun Gothic")
         font_size = style.get("size", 22)
         # Scale for preview: ~60% of target size, clamped
-        preview_size = max(12, min(int(font_size * 0.65), 36))
+        preview_size = max(1, min(int(font_size * 0.65), 36))
         fc = style.get("font_color", "#ffffff")
         oc = style.get("outline_color", "#000000")
         bold_css = "bold" if style.get("bold") else "normal"
@@ -324,8 +333,8 @@ class PreviewPanel(QWidget):
             tags = []
             if style.get("font"):
                 tags.append(f"\\fn{style['font']}")
-            if style.get("size"):
-                tags.append(f"\\fs{style['size']}")
+            if style.get("size") and style["size"] > 0:
+                tags.append(f"\\fs{max(1, style['size'])}")
             if style.get("bold"):
                 tags.append("\\b1")
             if style.get("italic"):
@@ -476,8 +485,8 @@ class PreviewPanel(QWidget):
             tags = []
             if style.get("font"):
                 tags.append(f"\\fn{style['font']}")
-            if style.get("size"):
-                tags.append(f"\\fs{style['size']}")
+            if style.get("size") and style["size"] > 0:
+                tags.append(f"\\fs{max(1, style['size'])}")
             if style.get("bold"):
                 tags.append("\\b1")
             if style.get("italic"):
