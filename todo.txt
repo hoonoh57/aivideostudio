@@ -1,5 +1,5 @@
 # AIVideoStudio (AVS) — 개발 로드맵 & TODO
-# 업데이트: 2026-03-23 (v0.5.2)
+# 업데이트: 2026-03-24 (v0.5.17)
 
 ## ═══════════════════════════════════════
 ## Phase 0: 기반 인프라 ✅ 완료
@@ -8,359 +8,80 @@
 ### 0-1. 환경 & 프로젝트 세팅
 - [x] Python 3.12 + uv 설치 및 검증
 - [x] pyproject.toml 작성 및 모든 의존성 설치 확인
-- [x] FFmpeg 8.1 설치 및 PATH 등록, ffmpeg -version 확인
-- [x] GPU 가속 확인 (cuda, vaapi, dxva2)
+- [x] FFmpeg 8.1 설치 및 PATH 등록
+- [x] GPU 가속 확인 — NVIDIA RTX 4070, Driver 595.79, CUDA 13.2, NVENC OK
 - [x] Git 리포지토리 초기화 + .gitignore
-- [x] GitHub Public 리포: https://github.com/hoonoh57/aivideostudio
-- [ ] pre-commit 설정 (ruff, mypy) — 나중
-- [ ] CI: GitHub Actions pytest 자동화 — 나중
-
-### 0-2. config & 유틸리티
-- [x] config.py: FFmpeg 경로 자동 탐지
-- [x] config.py: 프로젝트 기본 경로 (AppData\Local\AIVideoStudio)
-- [x] gpu_detect.py: GPU 가속 확인
-- [x] ffprobe.py: 미디어 파일 메타데이터 추출
-- [x] ffprobe.py: UTF-8 인코딩 (한국어 파일명 지원) ★v0.3.7
-- [x] time_utils.py: 시간 변환 유틸리티
-- [ ] config.py: 사용자 설정 JSON 저장/로딩
-- [ ] file_utils.py: 안전한 파일명 생성, 임시폴더 관리
-
-### 0-3. 프로젝트 파일 형식 (.avs) ✅ 완료 ★v0.5
-- [x] project.py: JSON 기반 프로젝트 스키마 (Clip, Asset, Project)
-- [x] project.py: 새 프로젝트 / 열기 / 저장 / 다른이름으로 저장 ★v0.5
-- [x] Ctrl+S / Ctrl+Shift+S / Ctrl+O 단축키 ★v0.5
-- [ ] project.py: 자동 저장 (5분 간격)
-- [ ] project.py: 최근 프로젝트 목록 관리
+- [x] GitHub Public: https://github.com/hoonoh57/aivideostudio
+- [ ] pre-commit 설정
 
 ## ═══════════════════════════════════════
-## Phase 1: 핵심 데이터 모델 — 부분 완료
+## Phase 1: 코어 엔진 ✅ 완료
 ## ═══════════════════════════════════════
 
-### 1-1. 타임라인 데이터 모델
-- [x] Clip 클래스 (소스경로, in/out, 타임라인 위치)
-- [x] 클립 트리밍, 분할(razor), 이동
-- [x] Asset 클래스 (파일 경로, 메타데이터, 썸네일)
-- [x] source_duration 필드 (원본 길이 추적) ★v0.3.7
-- [ ] Track 클래스 독립 모델 (현재 dict 기반 → 클래스화)
-- [ ] 클립 복제
-- [ ] 클립에 이펙트/트랜지션 연결 인터페이스
-
-### 1-2. 키프레임 엔진
-- [x] keyframe.py: 기본 구조 생성
-- [ ] 보간 함수 (Linear, Ease-In/Out, Bezier)
-- [ ] 임의 시간 보간 값 계산
-
-### 1-3. Undo/Redo 시스템 ✅ 완료
-- [x] undo_manager.py: push/undo/redo 함수 기반 시스템
-- [x] 클립 분할 undo/redo (clip_id 기반 추적)
-- [x] 클립 이동 undo/redo
-- [x] 클립 트림 undo/redo
-- [x] 클립 삭제 undo/redo
-- [x] 자막 편집/분할/병합 undo/redo ★v0.5.2
-- [ ] 최대 스택 크기 제한 (200)
-- [ ] 자동 스냅샷 저장
-
-### 1-4. 재생 엔진 ✅ 완료
-- [x] playback_engine.py: TimelinePlaybackEngine 클래스
-- [x] clip_at(t): 타임라인 시간 → 비디오 클립 검색
-- [x] query(t): 멀티트랙 비디오/오디오 조회
-- [x] set_tracks(): 타임라인 데이터 동기화
-- [x] find_next_video_time(): 다음 클립 탐색
-- [x] get_ordered_video_segments(): 정렬된 세그먼트 반환
-- [x] 비활성/뮤트 트랙 건너뛰기 (enabled/mute flag) ★v0.5
+- [x] Config / 유틸리티 (config_manager.py, constants.py)
+- [x] .avs 프로젝트 포맷 (JSON 기반 저장/로드)
+- [x] 기본 타임라인 데이터 모델 (Track, Clip, Gap)
+- [x] 키프레임 엔진 스켈레톤
+- [x] Undo / Redo (QUndoStack)
+- [x] 재생 엔진 (playback_engine.py)
+- [x] 기본 FFmpeg 엔진
 
 ## ═══════════════════════════════════════
-## Phase 2: FFmpeg 엔진 레이어 — 부분 완료
+## Phase 2: GUI 프레임워크 ✅ 완료
 ## ═══════════════════════════════════════
 
-### 2-1. FFmpeg 기본 엔진
-- [x] ffmpeg_engine.py: subprocess 기반 FFmpeg 실행
-- [x] ffmpeg_engine.py: 에러 핸들링 및 로깅 (loguru)
-- [ ] ffmpeg_engine.py: 진행률 파싱 (stderr → %)
-- [ ] ffmpeg_engine.py: 취소(kill) 지원
-- [ ] ffmpeg_engine.py: GPU 인코더 자동 선택 (h264_nvenc 등)
-
-### 2-2. 프록시 엔진 — 미구현
-- [ ] 원본 → 프록시 자동 생성 (540p, crf=28)
-- [ ] 프록시 ↔ 원본 매핑
-- [ ] 렌더링 시 원본으로 자동 전환
-
-### 2-3. 렌더 엔진 — 미구현
-- [ ] 타임라인 → FFmpeg 커맨드 체인 변환
-- [ ] 멀티 트랙 합성 (overlay, amix 필터그래프)
-- [ ] 2-pass 인코딩 지원
-- [ ] 렌더 캐시
+- [x] 메인 윈도우 레이아웃 (main_window.py)
+- [x] 타임라인 UI (timeline_panel.py, TimelineCanvas)
+- [x] 프리뷰 패널 (preview_panel.py)
+- [x] 자막 시스템 (subtitle_panel.py, subtitle_engine.py)
+- [x] Export 패널 기본 기능
 
 ## ═══════════════════════════════════════
-## Phase 3: GUI 기본 프레임 ✅ 완료
+## Phase 3: Export 시스템 ✅ v0.5.17 완료
 ## ═══════════════════════════════════════
 
-### 3-1. 메인 윈도우
-- [x] main_window.py: QMainWindow + 도킹 레이아웃
-- [x] 다크 테마 (dark_theme.qss)
-- [x] menu_bar.py: File/Edit/AI/Help 메뉴
-- [x] toolbar.py: Select/Razor/Text/Play/Import/Export ★v0.5 아이콘 추가
-- [x] shortcuts.py: 전역 단축키 (Space, V, C, J, L, Ctrl+±) ★v0.5
-- [ ] 레이아웃 저장/복원 (QSettings)
-- [ ] 단축키 커스터마이징
-
-### 3-2. 미리보기 패널 ✅ 완료 (mpv 기반)
-- [x] preview_panel.py: mpv 기반 재생 (vo=direct3d) ★v0.3.5
-- [x] 재생 컨트롤 (Play/Pause/Stop/±5s) ★v0.5 UI 개선
-- [x] 재생 속도 조절 (0.25x ~ 4x) ★v0.5
-- [x] 타임라인 seek 연동 (즉시 반영) ★v0.3.5
-- [x] 클립 간 gap 처리 (검은 화면 + wall-clock) ★v0.3.2
-- [x] 이미지 클립 재생 (wall-clock 기반) ★v0.3.7
-- [x] 슬라이더 스크러빙 ★v0.3.2
-- [x] 트림 후 engine 자동 동기화 ★v0.3.7
-- [x] 자막 오버레이 표시 ★v0.5
-- [x] 비디오 트랙 뮤트 시 오디오 제거 ★v0.5
-- [ ] 오버레이 표시 (안전 영역, 그리드)
-
-### 3-3. 에셋 패널
-- [x] asset_panel.py: 파일 가져오기 (파일 다이얼로그)
-- [x] 썸네일 + 메타데이터 표시
-- [x] Import → 미디어 패널만 추가 (타임라인 분리) ★v0.3.7
-- [x] 더블클릭 → 타임라인 끝에 배치 ★v0.3.7
-- [x] 비동기 파일 가져오기 (ImportWorker) ★v0.5
-- [x] 드래그 앤 드롭 (에셋 → 타임라인) ★v0.5
-- [ ] 검색/정렬/폴더 구성
-
-### 3-4. 속성 인스펙터
-- [x] inspector_panel.py: 선택된 클립 속성 표시
-- [ ] 위치 X/Y, 크기, 회전, 불투명도 슬라이더
-- [ ] 키프레임 토글 버튼
-- [ ] 속성 변경 시 실시간 프리뷰 반영
+- [x] In/Out Zone Bar (24px, I/O 키, 드래그 핸들)
+- [x] 멀티트랙 비디오 병합 (모든 활성 비디오 트랙 순차 export)
+- [x] Styled ASS 자막 생성 (프리뷰 스타일 → ASS 변환)
+- [x] ASS/SRT 이중 자막 번인 지원
+- [x] NVENC 자동 감지 + CPU fallback
+- [x] 세그먼트 검증 (zero-duration 스킵, 실패 시 continue)
+- [x] 동적 자막 폰트 크기 (해상도 기반)
+- [x] concat.txt 경로 수정, _make_black CPU 전용
+- [x] GPU 드라이버 업데이트 (566.36 → 595.79)
 
 ## ═══════════════════════════════════════
-## Phase 4: 타임라인 UI ✅ 완료
+## Phase 4: 다음 단계 (우선순위순)
 ## ═══════════════════════════════════════
 
-### 4-1. 타임라인 캔버스
-- [x] timeline_panel.py: QPainter 기반 멀티트랙 타임라인
-- [x] 눈금자 (타임코드 표시)
-- [x] 줌 인/아웃
-- [x] 플레이헤드 (빨간 삼각형 + 세로선)
-- [x] 플레이헤드 드래그 이동 ★v0.5
-- [x] 플레이헤드 자동 스크롤 ★v0.5
-- [x] 스냅 (클립 경계, 플레이헤드에 자석)
+### 즉시 (1-2h)
+- [ ] QFont setPointSize 경고 제거 (preview_panel.py, subtitle_panel.py)
+- [ ] timeline_panel.py 들여쓰기 오류 수정 (line 355)
+- [ ] 진단 스크립트 정리 (diag_*.py, fix_*.py → tools/ 디렉토리)
 
-### 4-2. 클립 상호작용
-- [x] 클립 드래그 이동 (같은 트랙)
-- [x] 클립 다른 트랙으로 이동 ★v0.5
-- [x] 클립 트리밍 (좌우 핸들 드래그)
-- [x] 동영상 트림 시 원본 길이 초과 제한 ★v0.3.7
-- [x] 이미지 트림 무제한 확대 허용 ★v0.3.7
-- [x] 클립 분할 (Razor, 마우스 위치 기준)
-- [x] 클립 삭제 (Delete 키 + 버튼)
-- [x] 우클릭 메뉴 (Delete Clip, Split Here)
-- [x] 화살표 키 1프레임 이동 (1/30s), Shift+화살표 10프레임 ★v0.5.1
-- [x] Home/End 키 네비게이션 ★v0.5
-- [ ] 클립 복사/붙여넣기 (Ctrl+C/V)
-- [ ] 멀티 선택 (Shift/Ctrl + 클릭)
-- [ ] 클립 색상 라벨
+### 단기 (3-5h 각)
+- [ ] 기본 오디오 편집 (클립 게인, 페이드 인/아웃, 파형 표시)
+- [ ] 클립 복사/붙여넣기 + 다중 선택 (Ctrl+C/V, Shift/Ctrl 클릭)
+- [ ] 이펙트 & 트랜지션 기초 (crossfade, fade-to-black, FFmpeg xfade)
+- [ ] PIP (Picture-in-Picture) — V2 트랙을 V1 위에 오버레이
 
-### 4-3. 트랙 관리 ✅ 완료 ★v0.5
-- [x] 비디오/오디오/자막 트랙 자동 생성
-- [x] 트랙 추가/삭제 (우클릭 메뉴) ★v0.5
-- [x] 트랙 활성화/비활성화 (👁 눈 아이콘) ★v0.5
-- [x] 트랙 뮤트/솔로/잠금 ★v0.5
-- [x] 비활성 트랙 어두운 오버레이 표시 ★v0.5
-- [ ] 트랙 높이 조절
-- [ ] 트랙 순서 변경
+### 중기
+- [ ] 프록시 / 렌더 엔진
+- [ ] 트랙 높이 컨트롤
+- [ ] 오디오 파형 오버레이
+- [ ] 이펙트 브라우저
+- [ ] 자동 저장
 
-### 4-4. 오디오 파형 — 미구현
-- [ ] 오디오 클립에 파형 오버레이
-- [ ] 파형 캐싱
+### 장기 (AI 기능)
+- [ ] 배경 제거
+- [ ] 업스케일링
+- [ ] 장면 감지
+- [ ] 객체 추적
+- [ ] 색보정 도구
+- [ ] 모션 그래픽
 
-## ═══════════════════════════════════════
-## Phase 5: 자막 시스템 ✅ 대부분 완료
-## ═══════════════════════════════════════
-
-### 5-1. Whisper STT
-- [x] subtitle_engine.py: Whisper 로컬 STT (base 모델)
-- [x] 한국어(ko) 자동 인식
-- [x] 결과 → SRT 변환 및 저장
-- [x] 자막 패널 UI (리스트 + 인라인 편집)
-- [x] 자막 스타일 (폰트, 색상, 외곽선, 크기)
-- [x] SRT/ASS 내보내기
-- [ ] GPU 가속 (torch CUDA)
-- [ ] SRT/ASS/VTT 가져오기 개선
-
-### 5-2. 자막 타임라인 편집 ✅ 완료 ★v0.5.2
-- [x] 자막 파일 → 타임라인 클립 자동 분할 ★v0.5
-- [x] 더블클릭 → 자막 텍스트 인라인 편집 ★v0.5.2
-- [x] 우클릭 → 자막 분할 (단어 경계 기준) ★v0.5.2
-- [x] 우클릭 → 다음 자막과 병합 ★v0.5.2
-- [x] 트림 핸들로 자막 타이밍 조절 ★v0.5.2
-- [x] 자막 변경 시 프리뷰 오버레이 자동 갱신 ★v0.5.2
-- [x] Ctrl+Shift+E → 자막 SRT/ASS 내보내기 ★v0.5.2
-- [x] 모든 자막 편집 Undo/Redo 지원 ★v0.5.2
-
-### 5-3. TTS 음성 생성
-- [x] tts_panel.py: 기본 UI
-- [ ] Edge-TTS 한국어 (ko-KR-SunHiNeural)
-- [ ] 다국어 지원
-- [ ] 텍스트 → WAV → 오디오 트랙 자동 배치
-- [ ] 속도/피치 조절
-
-## ═══════════════════════════════════════
-## Phase 6: 이펙트 & 트랜지션 — 미구현
-## ═══════════════════════════════════════
-
-- [ ] 이펙트 브라우저 (블러, 색상보정, 크로마키 등)
-- [ ] FFmpeg 필터 매핑
-- [ ] FFmpeg xfade 트랜지션 (35종)
-- [ ] 키프레임 그래프 에디터
-
-## ═══════════════════════════════════════
-## Phase 7: 오디오 편집 — 미구현
-## ═══════════════════════════════════════
-
-- [ ] 볼륨 조절, 페이드 인/아웃
-- [ ] 노멀라이즈 (loudnorm EBU R128)
-- [ ] pedalboard 이펙트 (EQ, Compressor, Reverb)
-- [ ] 노이즈 제거 (noisereduce / DeepFilterNet)
-- [ ] 오디오 덕킹
-- [ ] Demucs 음원 분리
-- [ ] 오디오 믹서 UI (페이더, 뮤트/솔로, 레벨 미터)
-
-## ═══════════════════════════════════════
-## Phase 8: 컬러 그레이딩 — 미구현
-## ═══════════════════════════════════════
-
-- [ ] 3-Way 컬러 휠
-- [ ] RGB 커브
-- [ ] LUT 적용 (.cube)
-- [ ] 화이트밸런스
-- [ ] 스코프 (Waveform/Vectorscope/Histogram)
-
-## ═══════════════════════════════════════
-## Phase 9: AI 기능 — 미구현
-## ═══════════════════════════════════════
-
-- [ ] 배경 제거 (rembg / SAM-2)
-- [ ] 업스케일링 (Real-ESRGAN)
-- [ ] 장면 감지 (PySceneDetect)
-- [ ] 객체/얼굴 추적 (YOLOv8 + MediaPipe)
-- [ ] 자동 숏폼 생성
-
-## ═══════════════════════════════════════
-## Phase 10: 모션그래픽 & 합성 — 미구현
-## ═══════════════════════════════════════
-
-- [ ] 텍스트 애니메이션 (Movis)
-- [ ] 크로마키 합성
-- [ ] 손떨림 보정 (vidstab)
-- [ ] 속도 램핑 (가변 속도)
-
-## ═══════════════════════════════════════
-## Phase 11: 멀티캠 & 협업 — 미구현
-## ═══════════════════════════════════════
-
-- [ ] 오디오 파형 자동 동기화
-- [ ] 멀티뷰 그리드
-- [ ] OpenTimelineIO 통합
-
-## ═══════════════════════════════════════
-## Phase 12: 내보내기 & 배치 ✅ 기본 완료
-## ═══════════════════════════════════════
-
-- [x] export_panel.py: 기본 UI
-- [x] 프리셋 (YouTube 1080p/4K, Shorts, TikTok, Fast Preview) ★v0.3.9
-- [x] 단일/멀티 클립 Export (concat) ★v0.3.9
-- [x] 이미지 → 동영상 변환 ★v0.3.9
-- [x] Gap → 검은 화면 삽입 ★v0.3.9
-- [x] 자막 번인 (burn subtitles) ★v0.3.9
-- [x] GPU 인코딩 (NVENC) ★v0.3.9
-- [x] 비활성/뮤트 트랙 Export에서 제외 ★v0.5
-- [ ] 커스텀 설정 (코덱, 해상도, FPS, 비트레이트)
-- [ ] 2-pass 토글
-- [ ] 예상 파일 크기
-- [ ] 렌더 큐 / 배치 처리
-- [ ] 진행률 실시간 표시 개선
-- [ ] 취소 기능 검증
-
-## ═══════════════════════════════════════
-## Phase 13: 플러그인 시스템 — 구조만 생성
-## ═══════════════════════════════════════
-
-- [x] plugins/ 디렉토리 구조
-- [ ] plugin_base.py: 추상 기본 클래스
-- [ ] plugin_loader.py: 동적 로딩
-- [ ] 내장 플러그인: auto_subtitle, auto_shortform, batch_export
-
-## ═══════════════════════════════════════
-## Phase 14: 마무리 & 배포 — 미구현
-## ═══════════════════════════════════════
-
-### UI/UX
-- [ ] 다크/라이트 테마 전환
-- [ ] 고DPI 지원
-- [ ] 스플래시 화면
-- [ ] 온보딩 튜토리얼
-
-### 성능
-- [ ] QFont setPointSize 경고 완전 제거
-- [ ] 타임라인 렌더링 최적화
-- [ ] 대용량 파일 테스트 (4K 60fps)
-- [ ] 메모리 프로파일링
-
-### 테스트
-- [ ] pytest 단위 테스트
-- [ ] pytest-qt GUI 테스트
-- [ ] 통합 테스트
-
-### 빌드 & 배포
-- [ ] PyInstaller .exe 빌드
-- [ ] FFmpeg 바이너리 번들
-- [ ] 인스톨러 (Inno Setup)
-- [ ] GitHub Releases
-
-### 문서
-- [ ] docs/architecture.md
-- [ ] docs/user_manual.md
-- [ ] docs/plugin_guide.md
-- [ ] README.md 업데이트
-
-## ═══════════════════════════════════════
-## ★ 다음 우선순위 추천 ★
-## ═══════════════════════════════════════
-
-### 추천 1: QFont 경고 완전 제거 & 안정화 (1~2시간)
-- [ ] preview_panel.py, subtitle_panel.py의 QFont setPointSize → setPixelSize 전환
-- [ ] "must be a top level window" 경고 해결
-- [ ] 전체 기능 회귀 테스트
-
-### 추천 2: 오디오 편집 기초 (Phase 7 일부, 3~4시간)
-- [ ] 볼륨 조절 (클립별 gain)
-- [ ] 페이드 인/아웃
-- [ ] 오디오 파형 표시 (FFmpeg → numpy → QPainter)
-- [ ] 비디오+오디오 동기 재생 개선
-
-### 추천 3: 클립 복사/붙여넣기 + 멀티 선택 (2~3시간)
-- [ ] Ctrl+C/V 클립 복사/붙여넣기
-- [ ] Shift+클릭 범위 선택, Ctrl+클릭 개별 추가
-- [ ] 선택된 클립 일괄 삭제/이동
-
-### 추천 4: 이펙트 & 트랜지션 기초 (Phase 6 일부, 4~5시간)
-- [ ] 기본 트랜지션 (Crossfade, Fade to Black)
-- [ ] FFmpeg xfade 필터 연동
-- [ ] 트랜지션 클립 UI 표시
-
-## ═══════════════════════════════════════
-## 버전 히스토리
-## ═══════════════════════════════════════
-
-- v0.3.0: 초기 GUI 프레임, QMediaPlayer 기반 프리뷰
-- v0.3.1: mpv 프리뷰 + playback engine + timeline 수정
-- v0.3.2: 인터페이스 불일치 수정 + seek 속도 개선
-- v0.3.3: seek 시도 (time_pos property)
-- v0.3.4: seek 디버그 로깅 추가
-- v0.3.5: seek 지연 해결 (vo=direct3d)
-- v0.3.6: 디버그 로그 정리
-- v0.3.7: 이미지 재생 + 트림 제한(동영상만) + 트림 동기화 + ffprobe UTF-8 + import 흐름 개선
-- v0.3.9: Export 완성 (멀티클립 concat, 자막 번인, NVENC, 프리셋)
-- v0.5.0: 프로젝트 저장/열기, 트랙 제어 (enable/mute/solo/lock), 눈 아이콘, 플레이헤드 드래그, 자동 스크롤, 재생 속도, 비동기 임포트, 툴바 아이콘, 단축키 시스템
-- v0.5.1: 화살표 키 프레임 단위 이동 (1/30s), Shift+화살표 10프레임
-- v0.5.2: 자막 인라인 편집 (더블클릭), 자막 분할/병합 (우클릭), 자막 SRT/ASS 내보내기 (Ctrl+Shift+E), Undo/Redo 지원
+### 배포
+- [ ] PyInstaller 빌드
+- [ ] FFmpeg 번들링
+- [ ] 인스톨러
+- [ ] 문서화
