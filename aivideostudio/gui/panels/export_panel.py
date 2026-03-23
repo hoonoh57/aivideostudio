@@ -301,6 +301,13 @@ class ExportPanel(QWidget):
         if mix_audio and self._playback_engine and hasattr(self._playback_engine, "get_ordered_audio_segments"):
             audio_segments = self._playback_engine.get_ordered_audio_segments()
 
+        # Collect PIP overlay layers (V2, V3, ...)
+        pip_layers = []
+        if self._playback_engine and hasattr(self._playback_engine, "get_pip_video_layers"):
+            pip_layers = self._playback_engine.get_pip_video_layers()
+            if pip_layers:
+                logger.info(f"PIP: {len(pip_layers)} overlay layer(s) detected — clip attribute based")
+
         self.btn_export.setEnabled(False)
         self.btn_cancel.setEnabled(True)
         self.progress.setVisible(True)
@@ -309,7 +316,7 @@ class ExportPanel(QWidget):
 
         t = threading.Thread(target=self._run_export, daemon=True,
                              args=(segments, audio_segments, output, preset,
-                                   sub, crop, use_gpu, total_dur))
+                                   sub, crop, use_gpu, total_dur, pip_layers))
         t.start()
 
     def _get_video_segments(self):
@@ -334,7 +341,7 @@ class ExportPanel(QWidget):
             return ["libx264", "-preset", "medium", "-crf", crf, "-b:v", vb]
 
     def _run_export(self, video_segs, audio_segs, output, preset,
-                    subtitle, crop, use_gpu, total_dur):
+                    subtitle, crop, use_gpu, total_dur, pip_layers=None):
         tmpdir = tempfile.mkdtemp(prefix="avs_export_")
         try:
             pw, ph = preset["w"], preset["h"]
@@ -363,7 +370,7 @@ class ExportPanel(QWidget):
                 self._sig.progress.emit(pct)
                 
                 part_path = os.path.join(tmpdir, f"part_{i:04d}.mp4")
-                path = seg["path"]
+                path = seg.get("path", seg.get("src", ""))
                 ext = _Path(path).suffix.lower()
                 is_image = ext in IMAGE_EXTS
                 dur = seg["timeline_end"] - seg["timeline_start"]
@@ -511,6 +518,18 @@ class ExportPanel(QWidget):
                 return
             
             current_video = concat_out
+
+            # ── Step 3.5: PIP overlay ──
+            if pip_layers:
+                self._sig.status.emit('Applying PIP overlay...')
+                self._sig.progress.emit(55)
+                pip_result = self._apply_pip_overlay(
+                    current_video, pip_layers, tmpdir, pw or 1920, ph or 1080,
+                    fps or 30, vcodec, total_dur)
+                if pip_result and _Path(pip_result).exists():
+                    current_video = pip_result
+                    logger.info('PIP overlay applied successfully')
+
             
             # Step 4: Mix audio
             if need_audio_mix:
@@ -583,6 +602,132 @@ class ExportPanel(QWidget):
             except Exception:
                 pass
 
+
+    def _apply_pip_overlay(self, base_video, pip_layers, tmpdir, pw, ph, fps, vcodec, total_dur):
+        """Overlay PIP layers onto the base video using FFmpeg overlay filter.
+
+        Each PIP layer is scaled to 1/4 screen and positioned at bottom-right
+        by default, unless clip has pip={x,y,w,h} overrides.
+
+        Args:
+            base_video: path to the base (V1) concatenated video
+            pip_layers: list of {"track_name", "track_name", "segments": [...]}
+            tmpdir: temp directory for intermediate files
+            pw, ph: output width, height
+            fps: output framerate
+            vcodec: video codec args list
+            total_dur: total timeline duration
+
+        Returns: path to composited video, or None on failure
+        """
+        self._sig.status.emit("Applying PIP overlay...")
+        self._sig.progress.emit(55)
+
+        current = base_video
+
+        for layer_idx, layer in enumerate(pip_layers):
+            segs = layer.get("segments", [])
+            if not segs:
+                continue
+
+            layer_name = layer.get("track_name", f"PIP {layer_idx+1}")
+            logger.info(f"PIP layer: {layer_name} ({len(segs)} segment(s))")
+
+            for seg_idx, seg in enumerate(segs):
+                seg_path = seg.get("path", seg.get("src", ""))
+                if not _Path(seg_path).exists():
+                    logger.warning(f"PIP source not found: {seg_path}")
+                    continue
+
+                pip_cfg = seg.get("pip", {})
+                # Default PIP: 1/4 size, bottom-right corner, 10px margin
+                pip_w = pip_cfg.get("w", pw // 4)
+                pip_h = pip_cfg.get("h", ph // 4)
+                pip_x = pip_cfg.get("x", pw - pip_w - 20)
+                pip_y = pip_cfg.get("y", ph - pip_h - 20)
+                pip_opacity = pip_cfg.get("opacity", 1.0)
+
+                tl_start = seg["timeline_start"]
+                tl_end = seg["timeline_end"]
+                in_pt = seg.get("in_point", 0)
+                dur = tl_end - tl_start
+
+                out_path = os.path.join(tmpdir, f"pip_{layer_idx}_{seg_idx}.mp4")
+
+                # Build FFmpeg command with overlay filter
+                # -ss on input for PIP source, enable overlay only during segment time
+                filter_parts = []
+                # Scale PIP input
+                filter_parts.append(f"[1:v]scale={pip_w}:{pip_h}")
+                if pip_opacity < 1.0:
+                    alpha_val = pip_opacity
+                    filter_parts[-1] += f",format=rgba,colorchannelmixer=aa={alpha_val}"
+                filter_parts[-1] += "[pip]"
+
+                # Overlay with enable condition (timeline-based)
+                overlay_filter = (
+                    f"[0:v][pip]overlay={pip_x}:{pip_y}:"
+                    f"enable='between(t,{tl_start},{tl_end})'[vout]"
+                )
+                filter_complex = ";".join(filter_parts) + ";" + overlay_filter
+
+                cmd = [
+                    self._ffmpeg, "-y", "-hide_banner",
+                    "-i", current,
+                    "-ss", str(in_pt), "-t", str(dur), "-i", seg_path,
+                    "-filter_complex", filter_complex,
+                    "-map", "[vout]", "-map", "0:a?",
+                    "-c:v"] + list(vcodec) + [
+                    "-c:a", "copy",
+                    "-pix_fmt", "yuv420p",
+                    out_path
+                ]
+
+                logger.info(f"PIP overlay cmd: {' '.join(cmd)}")
+
+                try:
+                    self._process = subprocess.Popen(
+                        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        creationflags=0x08000000)
+                    _, stderr_bytes = self._process.communicate()
+                    stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+
+                    if self._process.returncode != 0:
+                        logger.error(f"PIP overlay failed: {stderr[-400:]}")
+                        # Try CPU fallback if NVENC failed
+                        if "nvenc" in stderr.lower() or "encoder" in stderr.lower():
+                            logger.info("PIP: Retrying with CPU encoder...")
+                            cpu_codec = ["libx264", "-preset", "medium", "-crf", "20"]
+                            cmd_cpu = [c if c not in ["h264_nvenc", "p4"] else "" for c in cmd]
+                            # Rebuild with CPU codec
+                            cmd_cpu = [
+                                self._ffmpeg, "-y", "-hide_banner",
+                                "-i", current,
+                                "-ss", str(in_pt), "-t", str(dur), "-i", seg_path,
+                                "-filter_complex", filter_complex,
+                                "-map", "[vout]", "-map", "0:a?",
+                                "-c:v"] + cpu_codec + [
+                                "-c:a", "copy",
+                                "-pix_fmt", "yuv420p",
+                                out_path
+                            ]
+                            self._process = subprocess.Popen(
+                                cmd_cpu, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                creationflags=0x08000000)
+                            self._process.communicate()
+
+                    if _Path(out_path).exists() and _Path(out_path).stat().st_size > 0:
+                        current = out_path
+                        logger.info(f"PIP segment applied: {seg_path} at ({pip_x},{pip_y}) {pip_w}x{pip_h}")
+                    else:
+                        logger.warning(f"PIP overlay produced no output for segment {seg_idx}")
+
+                except Exception as e:
+                    logger.error(f"PIP overlay error: {e}")
+                    continue
+
+        return current if current != base_video else None
+
     def _mix_audio(self, video_path, audio_segs, output, total_dur, vcodec):
         if not audio_segs:
             return False
@@ -594,7 +739,7 @@ class ExportPanel(QWidget):
         audio_labels.append("[orig]")
         for i, seg in enumerate(audio_segs):
             inp_idx = i + 1
-            inputs += ["-i", seg["path"]]
+            inputs += ["-i", seg.get("path", seg.get("src", ""))]
             delay_ms = int(seg["timeline_start"] * 1000)
             in_pt = seg.get("in_point", 0)
             dur = seg["timeline_end"] - seg["timeline_start"]
@@ -717,12 +862,29 @@ class ExportPanel(QWidget):
             if style.get("alignment"):
                 tags.append(f"\\an{style['alignment']}")
             anim_tag = style.get("animation_tag", "")
-            if anim_tag:
-                tags.append(anim_tag)
-            tag_str = "{" + "".join(tags) + "}" if tags else ""
             s_time = fmt_time(ev["start"])
             e_time = fmt_time(ev["end"])
-            ass_lines.append(f"Dialogue: 0,{s_time},{e_time},Default,,0,0,0,,{tag_str}{text}")
+            if anim_tag == "__TYPEWRITER__":
+                # Typewriter: reveal char by char using \k tags
+                dur_ms = int((ev["end"] - ev["start"]) * 1000)
+                char_count = max(1, len(text.replace("\\N", "")))
+                per_char = max(1, dur_ms // char_count)
+                tag_prefix = "{" + "".join(tags) + "}" if tags else ""
+                tw_text = ""
+                for ch in text:
+                    if ch in ("\\", "{", "}"):
+                        tw_text += ch
+                    else:
+                        tw_text += "{\\k" + str(per_char // 10) + "}" + ch
+                ass_lines.append(f"Dialogue: 0,{s_time},{e_time},Default,,0,0,0,,{tag_prefix}{tw_text}")
+            elif anim_tag:
+                clean = anim_tag.replace("{", "").replace("}", "")
+                tags.append(clean)
+                tag_str = "{" + "".join(tags) + "}" if tags else ""
+                ass_lines.append(f"Dialogue: 0,{s_time},{e_time},Default,,0,0,0,,{tag_str}{text}")
+            else:
+                tag_str = "{" + "".join(tags) + "}" if tags else ""
+                ass_lines.append(f"Dialogue: 0,{s_time},{e_time},Default,,0,0,0,,{tag_str}{text}")
 
         import tempfile
         ass_path = os.path.join(tempfile.gettempdir(), "avs_export_styled.ass")

@@ -243,7 +243,7 @@ class MainWindow(QMainWindow):
                     continue
                 cd = dict(cw.clip_data)
                 # Remove non-serializable keys
-                clips.append({
+                clip_dict = {
                     "name": cd.get("name", ""),
                     "path": cd.get("path", ""),
                     "timeline_start": cd.get("timeline_start", 0),
@@ -253,7 +253,14 @@ class MainWindow(QMainWindow):
                     "source_duration": cd.get("source_duration", 0),
                     "track": cd.get("track", 0),
                     "subtitle_text": cd.get("subtitle_text", ""),
-                })
+                }
+                # Save subtitle style (font, color, animation, etc.)
+                if cd.get("subtitle_style"):
+                    clip_dict["subtitle_style"] = dict(cd["subtitle_style"])
+                # Save PIP settings
+                if cd.get("pip"):
+                    clip_dict["pip"] = dict(cd["pip"])
+                clips.append(clip_dict)
             tracks.append({
                 "name": track["name"],
                 "type": track["type"],

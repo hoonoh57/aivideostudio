@@ -441,6 +441,21 @@ class ClipWidget(QWidget):
         menu = QMenu(self)
         act_del = menu.addAction("Delete Clip")
         act_split = menu.addAction("Split Here")
+        act_pip = None
+        if self._track_type == "video":
+            canvas = self.parent()
+            if canvas and hasattr(canvas, 'tracks'):
+                track_idx = self.clip_data.get("track", 0)
+                vid_count = 0
+                for ti, t in enumerate(canvas.tracks):
+                    if t["type"] == "video":
+                        vid_count += 1
+                        if ti == track_idx:
+                            break
+                if vid_count > 1:
+                    menu.addSeparator()
+                    act_pip = menu.addAction("PIP Settings...")
+
         act_edit_text = None
         act_merge_next = None
         if self._track_type == "subtitle":
@@ -469,8 +484,10 @@ class ClipWidget(QWidget):
             p = self.parent()
             if p and hasattr(p, "_merge_subtitle_clip"):
                 p._merge_subtitle_clip(self)
-
-
+        elif act_pip and action == act_pip:
+            p = self.parent()
+            if p and hasattr(p, "_edit_pip_settings"):
+                p._edit_pip_settings(self)
 class TimelineCanvas(QWidget):
     playhead_moved = pyqtSignal(float)
     clip_selected = pyqtSignal(dict)
@@ -803,6 +820,68 @@ class TimelineCanvas(QWidget):
             self._undo_manager.push(f"Delete {dd.get('name','clip')}", undo_del, redo_del)
 
     # Subtitle Editing Methods
+    def _edit_pip_settings(self, cw):
+        """Open PIP settings dialog for overlay video clips."""
+        pip = cw.clip_data.get("pip", {})
+        from PyQt6.QtWidgets import (QDialog, QFormLayout, QSpinBox,
+                                     QDoubleSpinBox, QDialogButtonBox)
+
+        dlg = QDialog(self.window())
+        dlg.setWindowTitle("PIP Settings")
+        dlg.setMinimumWidth(300)
+        form = QFormLayout(dlg)
+
+        spin_x = QSpinBox()
+        spin_x.setRange(-1, 3840)
+        spin_x.setValue(pip.get("x", -1))
+        spin_x.setSpecialValueText("Auto (right)")
+        form.addRow("X Position:", spin_x)
+
+        spin_y = QSpinBox()
+        spin_y.setRange(-1, 2160)
+        spin_y.setValue(pip.get("y", -1))
+        spin_y.setSpecialValueText("Auto (bottom)")
+        form.addRow("Y Position:", spin_y)
+
+        spin_w = QSpinBox()
+        spin_w.setRange(0, 1920)
+        spin_w.setValue(pip.get("w", 0))
+        spin_w.setSpecialValueText("Auto (1/4)")
+        form.addRow("Width:", spin_w)
+
+        spin_h = QSpinBox()
+        spin_h.setRange(0, 1080)
+        spin_h.setValue(pip.get("h", 0))
+        spin_h.setSpecialValueText("Auto (1/4)")
+        form.addRow("Height:", spin_h)
+
+        spin_opacity = QDoubleSpinBox()
+        spin_opacity.setRange(0.0, 1.0)
+        spin_opacity.setSingleStep(0.1)
+        spin_opacity.setValue(pip.get("opacity", 1.0))
+        form.addRow("Opacity:", spin_opacity)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            new_pip = {}
+            if spin_x.value() >= 0:
+                new_pip["x"] = spin_x.value()
+            if spin_y.value() >= 0:
+                new_pip["y"] = spin_y.value()
+            if spin_w.value() > 0:
+                new_pip["w"] = spin_w.value()
+            if spin_h.value() > 0:
+                new_pip["h"] = spin_h.value()
+            new_pip["opacity"] = spin_opacity.value()
+            cw.clip_data["pip"] = new_pip
+            cw.update()
+            logger.info(f"PIP settings updated: {new_pip}")
+
     def _edit_subtitle_text(self, cw):
         from aivideostudio.gui.dialogs.subtitle_edit_dialog import SubtitleEditDialog
         from PyQt6.QtWidgets import QApplication

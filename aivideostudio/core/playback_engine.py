@@ -63,6 +63,7 @@ class TimelinePlaybackEngine:
         """
         result = {
             "video": None,
+            "video_layers": [],
             "audio": [],
             "subtitle": [],
             "timeline_pos": t,
@@ -87,7 +88,12 @@ class TimelinePlaybackEngine:
                         "clip": clip,
                     }
                     if track_type == "video":
-                        result["video"] = info
+                        info["track_name"] = track.get("name", "")
+                        if clip.get("pip"):  # PIP overlay clip
+                            info["pip"] = dict(clip["pip"])
+                            result["video_layers"].append(info)
+                        elif result["video"] is None:
+                            result["video"] = info
                         if is_muted:
                             result["video_muted"] = True
                         result["is_gap"] = False
@@ -150,6 +156,9 @@ class TimelinePlaybackEngine:
                 cs = clip.get("timeline_start", 0)
                 dur = clip.get("duration", 0)
                 if dur < 0.01:
+                    continue
+                # Skip PIP clips — they are overlay, not base
+                if clip.get('pip'):
                     continue
                 segments.append({
                     "timeline_start": cs,
@@ -215,6 +224,42 @@ class TimelinePlaybackEngine:
                         best = cs
         return best
 
+    def get_pip_video_layers(self):
+        """Return PIP overlay segments based on clip_data['pip'] attribute.
+        Any clip on ANY track that has clip_data['pip'] set is an overlay.
+        Returns: list of dicts {"track_name": str, "segments": [...]}
+        Each segment includes pip settings (x, y, w, h, opacity).
+        """
+        overlay_groups = {}  # track_name -> [segments]
+        for track in self._tracks:
+            if track.get("type") != "video":
+                continue
+            if not track.get("enabled", True):
+                continue
+            tname = track.get("name", "Video")
+            for clip in track.get("clips", []):
+                pip_cfg = clip.get("pip")
+                if not pip_cfg:
+                    continue  # Not a PIP clip
+                cs = clip.get("timeline_start", 0)
+                dur = clip.get("duration", 0)
+                if dur < 0.01:
+                    continue
+                seg = {
+                    "path": clip.get("path", ""),
+                    "timeline_start": cs,
+                    "timeline_end": cs + dur,
+                    "in_point": clip.get("in_point", 0),
+                    "duration": dur,
+                    "pip": dict(pip_cfg),  # x, y, w, h, opacity
+                }
+                overlay_groups.setdefault(tname, []).append(seg)
+
+        layers = []
+        for tname, segs in overlay_groups.items():
+            segs.sort(key=lambda s: s["timeline_start"])
+            layers.append({"track_name": tname, "segments": segs})
+        return layers
     def get_ordered_subtitle_segments(self):
         """Return all subtitle segments sorted by timeline_start."""
         segments = []
