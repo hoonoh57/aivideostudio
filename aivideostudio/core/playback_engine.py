@@ -136,31 +136,47 @@ class TimelinePlaybackEngine:
         return best
 
     def get_ordered_video_segments(self):
-        """Return video segments from the FIRST enabled video track only.
-        Multiple video tracks are layered (overlay), not concatenated.
-        For export, we use only the primary (first) video track."""
+        """Return video segments from ALL enabled video tracks,
+        sorted by timeline_start. When clips overlap, higher track
+        (lower index) takes priority — but for basic export we include all.
+        """
         segments = []
-        # Find first enabled video track
-        target_track = None
         for track in self._tracks:
-            if track.get("type") == "video" and track.get("enabled", True):
-                target_track = track
-                break
-        if target_track is None:
-            return []
-        for clip in target_track.get("clips", []):
-            cs = clip.get("timeline_start", 0)
-            dur = clip.get("duration", 0)
-            if dur < 0.01:
+            if track.get("type") != "video":
                 continue
-            segments.append({
-                "timeline_start": cs,
-                "timeline_end": cs + dur,
-                "path": clip.get("path", ""),
-                "in_point": clip.get("in_point", 0),
-                "out_point": clip.get("out_point", clip.get("in_point", 0) + dur),
-            })
+            if not track.get("enabled", True):
+                continue
+            for clip in track.get("clips", []):
+                cs = clip.get("timeline_start", 0)
+                dur = clip.get("duration", 0)
+                if dur < 0.01:
+                    continue
+                segments.append({
+                    "timeline_start": cs,
+                    "timeline_end": cs + dur,
+                    "path": clip.get("path", ""),
+                    "in_point": clip.get("in_point", 0),
+                    "out_point": clip.get("out_point", clip.get("in_point", 0) + dur),
+                })
         segments.sort(key=lambda s: s["timeline_start"])
+        # Remove fully overlapping segments (keep first/earlier one)
+        if len(segments) > 1:
+            merged = [segments[0]]
+            for seg in segments[1:]:
+                prev = merged[-1]
+                if seg["timeline_start"] >= prev["timeline_end"] - 0.05:
+                    # No overlap, keep as separate segment
+                    merged.append(seg)
+                elif seg["timeline_end"] > prev["timeline_end"]:
+                    # Partial overlap — trim start of this segment
+                    overlap = prev["timeline_end"] - seg["timeline_start"]
+                    trimmed = dict(seg)
+                    trimmed["timeline_start"] = prev["timeline_end"]
+                    trimmed["in_point"] = seg.get("in_point", 0) + overlap
+                    if trimmed["timeline_end"] - trimmed["timeline_start"] > 0.05:
+                        merged.append(trimmed)
+                # else: fully overlapped, skip
+            segments = merged
         return segments
 
     def get_ordered_audio_segments(self):

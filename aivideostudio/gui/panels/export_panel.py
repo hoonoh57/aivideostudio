@@ -283,26 +283,16 @@ class ExportPanel(QWidget):
 
         preset_name = self.combo_preset.currentText()
         preset = PRESETS[preset_name]
-        # Get subtitle path - from stored path or auto-detect from timeline
+        # Generate styled ASS from timeline subtitle events (matches preview)
         sub = None
         if self.chk_burn.isChecked():
-            sub = self._subtitle_path
-            if not sub and self._timeline_canvas:
-                # Auto-detect subtitle from timeline tracks
-                for track in self._timeline_canvas.tracks:
-                    if track.get("type") == "subtitle" and track.get("enabled", True):
-                        for clip in track.get("clips", []):
-                            cw = clip if isinstance(clip, dict) else None
-                            if cw is None and hasattr(clip, "clip_data"):
-                                cw = clip.clip_data
-                            if cw:
-                                p = cw.get("path", "")
-                                if p and _Path(p).exists() and _Path(p).suffix.lower() in (".srt", ".ass", ".vtt"):
-                                    sub = str(p)
-                                    logger.info(f"Auto-detected subtitle: {sub}")
-                                    break
-                        if sub:
-                            break
+            styled_ass = self._generate_styled_ass(export_range)
+            if styled_ass:
+                sub = styled_ass
+                logger.info(f"Using styled ASS for export: {sub}")
+            elif self._subtitle_path:
+                sub = self._subtitle_path
+                logger.info(f"Fallback to stored subtitle: {sub}")
         crop = self.chk_crop.isChecked()
         use_gpu = preset.get("gpu", False)
         mix_audio = self.chk_mix_audio.isChecked()
@@ -537,18 +527,21 @@ class ExportPanel(QWidget):
                 self._sig.progress.emit(80)
                 sub_out = output
                 temp_sub = os.path.join(tempfile.gettempdir(),
-                                        "avs_sub" + _Path(subtitle).suffix)
+                                        "avs_burn_sub" + _Path(subtitle).suffix)
                 shutil.copy2(subtitle, temp_sub)
-                safe_sub = temp_sub.replace("\\", "/").replace(":", "\\:")
-                
-                if temp_sub.endswith(".ass"):
+                safe_sub = temp_sub.replace(chr(92), "/").replace(":", "\\:")
+
+                if temp_sub.lower().endswith(".ass"):
                     sub_vf = f"ass='{safe_sub}'"
+                    logger.info("Burning ASS subtitle with full styles")
                 else:
+                    font_size = max(12, min(20, int(ph / 80))) if ph > 0 else 16
+                    margin_v = max(10, int(ph / 40)) if ph > 0 else 20
                     sub_vf = (f"subtitles='{safe_sub}':"
-                              "force_style='FontName=Malgun Gothic,FontSize=24,"
-                              "PrimaryColour=&HFFFFFF,OutlineColour=&H000000,"
-                              "Outline=2,Shadow=1'")
-                
+                              f"force_style='FontName=Malgun Gothic,FontSize={font_size},"
+                              f"PrimaryColour=&HFFFFFF,OutlineColour=&H000000,"
+                              f"Outline=2,Shadow=1,MarginV={margin_v}'")
+
                 cmd = [self._ffmpeg, "-y", "-hide_banner",
                        "-i", current_video, "-vf", sub_vf,
                        "-c:v"] + list(vcodec) + [
@@ -557,10 +550,16 @@ class ExportPanel(QWidget):
                 self._process = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     creationflags=0x08000000)
-                self._process.communicate()
+                _, stderr_bytes = self._process.communicate()
+                if self._process.returncode != 0:
+                    stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+                    logger.error(f"Subtitle burn failed: {stderr[-500:]}")
+                    if current_video != output:
+                        shutil.copy2(current_video, output)
+                else:
+                    current_video = sub_out
                 if os.path.exists(temp_sub):
                     os.remove(temp_sub)
-                current_video = sub_out
             elif current_video != output:
                 shutil.copy2(current_video, output)
             
@@ -630,6 +629,107 @@ class ExportPanel(QWidget):
             logger.warning(f"Audio mix error: {e}")
             shutil.copy2(video_path, output)
         return True
+
+    def _generate_styled_ass(self, export_range=None):
+        """Generate ASS subtitle file from timeline events with full styles.
+        Matches preview rendering exactly."""
+        if not self._timeline_canvas:
+            return None
+        events = []
+        for track in self._timeline_canvas.tracks:
+            if track.get("type") != "subtitle" or not track.get("enabled", True):
+                continue
+            for clip in track.get("clips", []):
+                try:
+                    if not clip._alive: continue
+                except (RuntimeError, AttributeError): continue
+                cd = clip.clip_data
+                events.append({
+                    "start": cd.get("timeline_start", 0),
+                    "end": cd.get("timeline_start", 0) + cd.get("duration", 0),
+                    "text": cd.get("subtitle_text", cd.get("name", "")),
+                    "style": cd.get("subtitle_style", {}),
+                })
+        if not events:
+            return None
+        events.sort(key=lambda e: e["start"])
+        # Apply export range offset
+        if export_range:
+            r_start, r_end = export_range
+            filtered = []
+            for ev in events:
+                if ev["end"] <= r_start or ev["start"] >= r_end:
+                    continue
+                new_ev = dict(ev)
+                new_ev["start"] = max(0, ev["start"] - r_start)
+                new_ev["end"] = min(r_end - r_start, ev["end"] - r_start)
+                filtered.append(new_ev)
+            events = filtered
+        if not events:
+            return None
+
+        def fmt_time(sec):
+            h = int(sec // 3600)
+            m = int((sec % 3600) // 60)
+            s = sec % 60
+            return f"{h}:{m:02d}:{s:05.2f}"
+
+        ass_lines = [
+            "[Script Info]",
+            "ScriptType: v4.00+",
+            "PlayResX: 1920",
+            "PlayResY: 1080",
+            "WrapStyle: 0",
+            "",
+            "[V4+ Styles]",
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, Strikeout, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+            "Style: Default,Malgun Gothic,22,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,30,1",
+            "",
+            "[Events]",
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+        ]
+        for ev in events:
+            text = ev["text"].replace("\n", "\\N")
+            style = ev.get("style", {})
+            tags = []
+            if style.get("font"):
+                tags.append(f"\\fn{style['font']}")
+            if style.get("size"):
+                tags.append(f"\\fs{style['size']}")
+            if style.get("bold"):
+                tags.append("\\b1")
+            if style.get("italic"):
+                tags.append("\\i1")
+            if style.get("font_color"):
+                c = style["font_color"].lstrip("#")
+                if len(c) == 6:
+                    tags.append(f"\\c&H{c[4:6]}{c[2:4]}{c[0:2]}&")
+            if style.get("outline_color"):
+                c = style["outline_color"].lstrip("#")
+                if len(c) == 6:
+                    tags.append(f"\\3c&H{c[4:6]}{c[2:4]}{c[0:2]}&")
+            if style.get("outline_size") is not None:
+                tags.append(f"\\bord{style['outline_size']}")
+            if style.get("shadow") is False:
+                tags.append("\\shad0")
+            if style.get("bg_box"):
+                tags.append("\\3a&H80&")
+            if style.get("alignment"):
+                tags.append(f"\\an{style['alignment']}")
+            anim_tag = style.get("animation_tag", "")
+            if anim_tag:
+                tags.append(anim_tag)
+            tag_str = "{" + "".join(tags) + "}" if tags else ""
+            s_time = fmt_time(ev["start"])
+            e_time = fmt_time(ev["end"])
+            ass_lines.append(f"Dialogue: 0,{s_time},{e_time},Default,,0,0,0,,{tag_str}{text}")
+
+        import tempfile
+        ass_path = os.path.join(tempfile.gettempdir(), "avs_export_styled.ass")
+        with open(ass_path, "w", encoding="utf-8-sig") as f:
+            f.write("\n".join(ass_lines))
+        logger.info(f"Generated styled ASS: {ass_path} ({len(events)} events)")
+        return ass_path
 
     def _make_black(self, out_path, duration, w, h, fps, vcodec):
         """Generate a black video segment. Always uses CPU encoder for reliability."""
