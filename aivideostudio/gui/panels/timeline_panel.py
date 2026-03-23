@@ -29,6 +29,7 @@ PIXELS_PER_SECOND = 100
 SNAP_THRESHOLD = 8
 MIN_CLIP_WIDTH = 10
 HANDLE_WIDTH = 6
+DRAG_THRESHOLD = 5  # pixels before drag starts
 FRAME_DURATION = 1.0 / 30.0  # ~0.0333s per frame at 30fps
 
 CLR_BG = QColor(30, 30, 30)
@@ -213,7 +214,9 @@ class ClipWidget(QWidget):
                 self._drag_start = self._trim_start_global
                 self._pre_drag_data = dict(self.clip_data)
             else:
-                self._dragging = True
+                # Don't start drag yet - wait for threshold in mouseMoveEvent
+                self._dragging = False
+                self._drag_pending = True
                 self._drag_start = event.globalPosition().toPoint()
                 self._drag_start_x = self.x()
                 self._drag_start_y = self.y()
@@ -258,10 +261,16 @@ class ClipWidget(QWidget):
             self.update_geometry()
             self.trimmed.emit(self)
             event.accept()
-        elif self._dragging:
+        elif getattr(self, "_drag_pending", False) or self._dragging:
             gpos = event.globalPosition().toPoint()
             delta_x = gpos.x() - self._drag_start.x()
             delta_y = gpos.y() - self._drag_start.y()
+            # Check threshold before starting actual drag
+            if not self._dragging:
+                if abs(delta_x) < DRAG_THRESHOLD and abs(delta_y) < DRAG_THRESHOLD:
+                    return  # Not enough movement, don't start drag
+                self._dragging = True
+                self._drag_pending = False
             new_x = max(HEADER_WIDTH, self._drag_start_x + delta_x)
             new_y = self._drag_start_y + delta_y
             # Snap Y to track rows (dynamic height)
@@ -352,6 +361,7 @@ class ClipWidget(QWidget):
         self._trimming = None
         self._trim_start_global = None
         self._dragging = False
+        self._drag_pending = False
         event.accept()
 
     def mouseDoubleClickEvent(self, event):
