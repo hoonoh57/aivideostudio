@@ -452,7 +452,7 @@ class ClipWidget(QWidget):
             act_edit_text = menu.addAction("Edit Subtitle Text...")
             act_merge_next = menu.addAction("Merge with Next Subtitle")
 
-        action = menu.exec(event.globalPos())
+        action = menu.exec(event.globalPosition().toPoint())
         if action == act_del:
             p = self.parent()
             if p and hasattr(p, "remove_clip_widget"):
@@ -584,6 +584,7 @@ class TimelineCanvas(QWidget):
         cw.show()
         # Request thumbnail extraction for video clips
         if track["type"] == "video" and clip_data.get("path"):
+            logger.info(f"add_clip: track={track['type']} path={clip_data.get('path','NONE')[:40]} ffmpeg={self._ffmpeg_path}")
             self._request_thumbnails(cw)
         self._update_total_duration()
         self._update_size()
@@ -1211,7 +1212,7 @@ class TimelineCanvas(QWidget):
             x, y = event.pos().x(), event.pos().y()
             # Eye icon click
             if x < 20 and y >= RULER_HEIGHT:
-                track_idx = self._track_at_y(y)
+                track_idx = self._track_at_y(y)[0]
                 if 0 <= track_idx < len(self.tracks):
                     self.tracks[track_idx]["enabled"] = not self.tracks[track_idx].get("enabled", True)
                     self.update()
@@ -1241,9 +1242,9 @@ class TimelineCanvas(QWidget):
         if event.button() == Qt.MouseButton.RightButton:
             x, y = event.pos().x(), event.pos().y()
             if x < HEADER_WIDTH and y >= RULER_HEIGHT:
-                track_idx = self._track_at_y(y)
+                track_idx = self._track_at_y(y)[0]
                 if 0 <= track_idx < len(self.tracks):
-                    self._show_track_menu(track_idx, event.globalPos())
+                    self._show_track_menu(track_idx, event.globalPosition().toPoint())
                     event.accept()
                     return
         super().mousePressEvent(event)
