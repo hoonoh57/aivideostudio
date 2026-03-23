@@ -1074,7 +1074,7 @@ class TimelineCanvas(QWidget):
         clip_px_w = max(10, int(clip_dur * getattr(self, 'pps', PIXELS_PER_SECOND)))
         num_frames = max(2, min(60, clip_px_w // max(1, frame_w)))
         ffmpeg = getattr(self, '_ffmpeg_path', 'ffmpeg')
-        clip_id = id(cw)
+        clip_id = getattr(cw, "_clip_id", -1)
         logger.info(f'Filmstrip request: {os.path.basename(path)} frames={num_frames} h={frame_h} ffmpeg={ffmpeg}')
         worker = FilmstripWorkerThread(clip_id, path, clip_dur, num_frames, frame_h, ffmpeg)
         worker.filmstrip_ready.connect(self._on_filmstrip_ready)
@@ -1094,7 +1094,7 @@ class TimelineCanvas(QWidget):
         for track in self.tracks:
             for cw in track.get('clips', []):
                 try:
-                    if id(cw) == clip_id and cw.isVisible():
+                    if getattr(cw, "_clip_id", -1) == clip_id and cw.isVisible():
                         cw.set_filmstrip(pm, num_frames)
                         logger.info(f'Filmstrip loaded: {os.path.basename(cw.clip_data.get("path",""))} frames={num_frames}')
                         return
