@@ -1,106 +1,151 @@
-"""Thumbnail extraction engine using FFmpeg.
-Thread-safe: ffmpeg runs in QThread, QPixmap created only on main thread.
+"""Thumbnail / filmstrip engine for timeline clips.
+
+Uses FFmpeg to generate a horizontal sprite sheet (tile Nx1) of evenly-spaced
+frames.  The sprite sheet is loaded once; paintEvent slices it into individual
+frames that tile across the clip width.
+
+Reference implementation: KDE Kdenlive ClipThumbs.qml
+Research basis: Torralba (MIT), "How many pixels make an image?" – 32×32 color
+pixels yield 80 % scene-recognition accuracy.
 """
-import subprocess
-import tempfile
-import os
-import threading
+from __future__ import annotations
+import os, subprocess, tempfile, threading, hashlib
 from pathlib import Path
-from PyQt6.QtCore import QThread, pyqtSignal, QObject
-from PyQt6.QtGui import QPixmap
 from loguru import logger
 
-_cache = {}
+from PyQt6.QtCore import QThread, pyqtSignal
+
+# ── thread-safe cache ──────────────────────────────────────────────
+_cache: dict[str, str] = {}
 _lock = threading.Lock()
 
 
-def _cache_key(path, time_sec):
-    return (str(path), round(time_sec, 2))
+def _cache_key(path: str, n_frames: int, frame_h: int) -> str:
+    return f"{path}|{n_frames}|{frame_h}"
 
 
-def extract_thumbnail_sync(file_path, time_sec, ffmpeg="ffmpeg"):
-    """Extract a frame to a temp file. Returns temp file path or None."""
-    path = str(file_path)
-    key = _cache_key(path, time_sec)
+def extract_filmstrip_sync(
+    video_path: str,
+    duration: float,
+    num_frames: int,
+    frame_height: int,
+    ffmpeg: str = "ffmpeg",
+) -> str | None:
+    """Generate a Nx1 horizontal sprite sheet.  Returns path to PNG or None."""
+    key = _cache_key(video_path, num_frames, frame_height)
     with _lock:
-        if key in _cache:
+        if key in _cache and os.path.isfile(_cache[key]):
+            return _cache[key]
+
+    if duration <= 0 or num_frames < 1:
+        return None
+
+    fps_val = num_frames / duration          # evenly-spaced
+    fps_str = f"{fps_val:.6f}"
+
+    try:
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+
+        cmd = [
+            ffmpeg, "-y",
+            "-i", video_path,
+            "-frames:v", "1",
+            "-vf", f"fps={fps_str},scale=-2:{frame_height},tile={num_frames}x1",
+            "-q:v", "3",
+            tmp_path,
+        ]
+        logger.debug(f"Filmstrip cmd: {' '.join(cmd)}")
+        subprocess.run(cmd, timeout=30, capture_output=True)
+
+        if os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 200:
+            with _lock:
+                _cache[key] = tmp_path
+            logger.info(
+                f"Filmstrip OK: {os.path.basename(video_path)} "
+                f"frames={num_frames} h={frame_height}"
+            )
+            return tmp_path
+        else:
+            if os.path.isfile(tmp_path):
+                os.unlink(tmp_path)
+            return None
+    except Exception as e:
+        logger.error(f"Filmstrip error: {e}")
+        return None
+
+
+def extract_thumbnail_sync(
+    video_path: str, time: float, ffmpeg: str = "ffmpeg"
+) -> str | None:
+    """Single-frame extraction (legacy, used for non-video assets)."""
+    key = f"single|{video_path}|{time:.2f}"
+    with _lock:
+        if key in _cache and os.path.isfile(_cache[key]):
             return _cache[key]
     try:
         tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
         tmp_path = tmp.name
         tmp.close()
         cmd = [
-            ffmpeg, "-y", "-ss", f"{time_sec:.3f}",
-            "-i", path, "-vframes", "1",
-            "-vf", "scale=200:-2", "-q:v", "3",
-            "-loglevel", "error", tmp_path
+            ffmpeg, "-y", "-ss", str(time),
+            "-i", video_path,
+            "-vframes", "1",
+            "-vf", "scale=200:-2",
+            "-q:v", "3",
+            tmp_path,
         ]
-        result = subprocess.run(cmd, capture_output=True, timeout=10)
-        if result.returncode == 0 and os.path.getsize(tmp_path) > 100:
+        subprocess.run(cmd, timeout=10, capture_output=True)
+        if os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 100:
             with _lock:
                 _cache[key] = tmp_path
             return tmp_path
         else:
-            try: os.unlink(tmp_path)
-            except OSError: pass
+            if os.path.isfile(tmp_path):
+                os.unlink(tmp_path)
             return None
-    except subprocess.TimeoutExpired:
-        logger.debug(f"Thumbnail timeout: {Path(path).name}@{time_sec:.1f}s")
-        return None
-    except FileNotFoundError:
-        logger.warning("ffmpeg not found - thumbnails disabled")
-        return None
-    except Exception as e:
-        logger.debug(f"Thumbnail extract error: {e}")
+    except Exception:
         return None
 
 
-class ThumbnailWorkerThread(QThread):
-    """QThread that extracts start/end thumbnails and emits file paths."""
-    # Signal: (clip_id, start_path_or_empty, end_path_or_empty)
-    thumbnails_ready = pyqtSignal(int, str, str)
+class FilmstripWorkerThread(QThread):
+    """Background thread – emits (clip_id, sprite_path, num_frames)."""
+    filmstrip_ready = pyqtSignal(int, str, int)
 
-    def __init__(self, clip_id, video_path, in_point, out_point, ffmpeg="ffmpeg"):
+    def __init__(self, clip_id, video_path, duration, num_frames, frame_height, ffmpeg):
         super().__init__()
-        self._clip_id = clip_id
-        self._video_path = str(video_path)
-        self._in_point = in_point
-        self._out_point = out_point
-        self._ffmpeg = ffmpeg or "ffmpeg"
+        self.clip_id = clip_id
+        self.video_path = video_path
+        self.duration = duration
+        self.num_frames = num_frames
+        self.frame_height = frame_height
+        self.ffmpeg = ffmpeg
 
     def run(self):
-        """Runs in background thread - no Qt GUI objects here."""
-        end_time = max(self._in_point + 0.1, self._out_point - 0.1)
-        p1 = extract_thumbnail_sync(self._video_path, self._in_point, self._ffmpeg)
-        p2 = extract_thumbnail_sync(self._video_path, end_time, self._ffmpeg)
-        self.thumbnails_ready.emit(
-            self._clip_id,
-            p1 or "",
-            p2 or ""
+        result = extract_filmstrip_sync(
+            self.video_path, self.duration,
+            self.num_frames, self.frame_height,
+            self.ffmpeg,
         )
+        if result:
+            self.filmstrip_ready.emit(self.clip_id, result, self.num_frames)
 
 
 class ThumbnailEngine:
-    """Generates thumbnail image files for video assets (used by main_window)."""
+    """Compatibility wrapper."""
     def __init__(self, ffmpeg_path="ffmpeg"):
-        self._ffmpeg = ffmpeg_path or "ffmpeg"
+        self._ffmpeg = ffmpeg_path
 
-    def generate(self, video_path, time_sec=1.0):
-        path = str(video_path)
-        if not os.path.isfile(path):
-            return None
-        ext = os.path.splitext(path)[1].lower()
-        image_exts = (".png", ".jpg", ".jpeg", ".bmp", ".gif",
-                      ".tiff", ".tif", ".webp", ".svg")
-        if ext in image_exts:
-            return path
-        return extract_thumbnail_sync(path, time_sec, self._ffmpeg)
+    def generate(self, path, time=0):
+        return extract_thumbnail_sync(path, time, self._ffmpeg)
 
 
 def clear_cache():
     with _lock:
-        for fp in _cache.values():
-            try: os.unlink(fp)
-            except OSError: pass
+        for p in _cache.values():
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
         _cache.clear()
-    logger.info("Thumbnail cache cleared")

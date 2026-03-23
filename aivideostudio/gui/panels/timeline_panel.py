@@ -7,7 +7,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush
 from loguru import logger
-from aivideostudio.engines.thumbnail_engine import ThumbnailWorkerThread
+from aivideostudio.engines.thumbnail_engine import FilmstripWorkerThread
+import os
 
 def _qf(name, pixel_size, weight=None):
     """Create QFont with pixel size (avoids QFont pointSize <= 0 error)."""
@@ -23,7 +24,7 @@ TRACK_HEIGHT = 40  # fallback
 TRACK_HEIGHT_DEFAULT = 40
 TRACK_HEIGHT_MIN = 28
 TRACK_HEIGHT_MAX = 200
-THUMB_MIN_HEIGHT = 80  # show thumbnails above this height
+THUMB_MIN_HEIGHT = 28  # MIT research: 32x32 pixels = 80% recognition
 HEADER_WIDTH = 120
 RULER_HEIGHT = 26
 PIXELS_PER_SECOND = 100
@@ -84,9 +85,9 @@ class ClipWidget(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._alive = True
         self._waveform_peaks = None  # list of 0.0-1.0
-        self._thumb_start = None  # QPixmap
-        self._thumb_end = None    # QPixmap
-        self._thumb_requested = False
+        self._filmstrip = None  # QPixmap sprite sheet  # QPixmap
+        self._filmstrip_count = 0    # QPixmap
+        self._filmstrip_requested = False
         self.update_geometry()
 
     def update_geometry(self):
@@ -116,12 +117,10 @@ class ClipWidget(QWidget):
         if self._alive:
             self.update()
 
-    def set_thumbnails(self, start_px, end_px):
-        """Set start/end thumbnail pixmaps."""
-        self._thumb_start = start_px
-        self._thumb_end = end_px
-        if self._alive:
-            self.update()
+    def set_filmstrip(self, pixmap, count):
+        self._filmstrip = pixmap
+        self._filmstrip_count = count
+        self.update()
 
     def paintEvent(self, event):
         if not self._alive:
@@ -196,25 +195,31 @@ class ClipWidget(QWidget):
         # Draw thumbnails if track height >= THUMB_MIN_HEIGHT and this is a video clip
         _thumb_left_w = 0
         _thumb_right_w = 0
-        if self._track_type == "video" and r.height() >= THUMB_MIN_HEIGHT - 6:
-            th_h = r.height() - 4  # thumbnail height with margin
-            if self._thumb_start and not self._thumb_start.isNull():
-                scaled = self._thumb_start.scaledToHeight(
-                    th_h, Qt.TransformationMode.SmoothTransformation)
-                tx = r.x() + 2
-                ty = r.y() + 2
-                p.drawPixmap(tx, ty, scaled)
-                _thumb_left_w = scaled.width() + 4
-            if self._thumb_end and not self._thumb_end.isNull():
-                scaled = self._thumb_end.scaledToHeight(
-                    th_h, Qt.TransformationMode.SmoothTransformation)
-                tx = r.right() - scaled.width() - 2
-                ty = r.y() + 2
-                # Only draw if it doesn't overlap start thumbnail
-                if tx > r.x() + _thumb_left_w + 4:
-                    p.drawPixmap(tx, ty, scaled)
-                    _thumb_right_w = scaled.width() + 4
-
+        # ── Filmstrip: tile frames across clip (Kdenlive-style) ──
+        if self._track_type == 'video' and r.height() >= THUMB_MIN_HEIGHT - 6 and self._filmstrip and self._filmstrip_count > 0:
+            dar = 16 / 9  # display aspect ratio
+            frame_h = r.height() - 4
+            frame_w = int(frame_h * dar)
+            sprite_w = self._filmstrip.width()
+            single_w = max(1, sprite_w // self._filmstrip_count)
+            single_h = self._filmstrip.height()
+            x_draw = 2
+            clip_w = r.width() - 4
+            fi = 0
+            from PyQt6.QtCore import QRect, QRectF
+            while x_draw < clip_w and fi < self._filmstrip_count:
+                src_rect = QRect(fi * single_w, 0, single_w, single_h)
+                dst_rect = QRectF(x_draw, 2, min(frame_w, clip_w - x_draw), frame_h)
+                p.drawPixmap(dst_rect, self._filmstrip, QRectF(src_rect))
+                x_draw += frame_w
+                fi += 1
+            # repeat last frame if clip wider than all frames
+            if fi > 0:
+                last_src = QRect((fi - 1) * single_w, 0, single_w, single_h)
+                while x_draw < clip_w:
+                    dst_rect = QRectF(x_draw, 2, min(frame_w, clip_w - x_draw), frame_h)
+                    p.drawPixmap(dst_rect, self._filmstrip, QRectF(last_src))
+                    x_draw += frame_w
         p.setPen(CLR_CLIP_TEXT)
         name = Path(self.clip_data.get("name", "Clip")).stem
         dur = self.clip_data.get("duration", 0)
@@ -1036,58 +1041,65 @@ class TimelineCanvas(QWidget):
                     cw.update()
 
     def _request_thumbnails(self, cw):
-        """Request thumbnail extraction using QThread (proven pattern)."""
-        if cw._thumb_requested:
+        """Request filmstrip generation for a video clip (Kdenlive-style continuous)."""
+        if getattr(cw, '_filmstrip_requested', False):
             return
-        cw._thumb_requested = True
-        path = cw.clip_data.get("path", "")
-        if not path:
+        cd = cw.clip_data
+        path = cd.get('path', '')
+        if not path or not os.path.isfile(path):
             return
-        ext = Path(path).suffix.lower()
-        image_exts = (".png", ".jpg", ".jpeg", ".bmp", ".gif",
-                      ".tiff", ".tif", ".webp", ".svg")
-        if ext in image_exts:
+        # Image files: load directly
+        ext = os.path.splitext(path)[1].lower()
+        if ext in ('.png','.jpg','.jpeg','.bmp','.gif','.tiff','.tif','.webp','.svg'):
             from PyQt6.QtGui import QPixmap
-            px = QPixmap(str(path))
-            if not px.isNull():
-                cw.set_thumbnails(px, px)
-                logger.info(f"Thumbnail (image): {Path(path).name}")
+            pm = QPixmap(path)
+            if not pm.isNull():
+                cw.set_filmstrip(pm, 1)
+            cw._filmstrip_requested = True
             return
-        in_pt = cw.clip_data.get("in_point", 0.0)
-        out_pt = cw.clip_data.get("out_point",
-                    in_pt + cw.clip_data.get("duration", 1.0))
-        ff = self._ffmpeg_path or "ffmpeg"
-        clip_id = getattr(cw, '_clip_id', -1)
-        logger.info(f"Thumbnail request: {Path(path).name} id={clip_id}")
-        worker = ThumbnailWorkerThread(clip_id, path, in_pt, out_pt, ff)
-        worker.thumbnails_ready.connect(self._on_thumbnails_ready)
-        if not hasattr(self, '_thumb_workers'):
-            self._thumb_workers = []
-        self._thumb_workers.append(worker)
-        worker.finished.connect(lambda w=worker: self._thumb_workers.remove(w) if w in self._thumb_workers else None)
+        # Video files: generate filmstrip sprite sheet
+        duration = cd.get('duration', 0)
+        in_pt = cd.get('in_point', 0)
+        out_pt = cd.get('out_point', duration)
+        clip_dur = out_pt - in_pt
+        if clip_dur <= 0:
+            clip_dur = duration
+        if clip_dur <= 0:
+            return
+        # Calculate frame dimensions (Kdenlive method)
+        track_h = cw.height()
+        frame_h = max(28, track_h - 4)
+        dar = 16 / 9
+        frame_w = int(frame_h * dar)
+        clip_px_w = max(10, int(clip_dur * getattr(self, 'pps', PIXELS_PER_SECOND)))
+        num_frames = max(2, min(60, clip_px_w // max(1, frame_w)))
+        ffmpeg = getattr(self, '_ffmpeg_path', 'ffmpeg')
+        clip_id = id(cw)
+        logger.info(f'Filmstrip request: {os.path.basename(path)} frames={num_frames} h={frame_h} ffmpeg={ffmpeg}')
+        worker = FilmstripWorkerThread(clip_id, path, clip_dur, num_frames, frame_h, ffmpeg)
+        worker.filmstrip_ready.connect(self._on_filmstrip_ready)
+        if not hasattr(self, '_filmstrip_workers'):
+            self._filmstrip_workers = []
+        self._filmstrip_workers.append(worker)
         worker.start()
+        cw._filmstrip_requested = True
 
-    def _on_thumbnails_ready(self, clip_id, start_path, end_path):
-        """Slot on main thread: create QPixmap and assign to clip."""
+    def _on_filmstrip_ready(self, clip_id, sprite_path, num_frames):
+        """Load sprite sheet as QPixmap on main thread and assign to clip."""
         from PyQt6.QtGui import QPixmap
-        px_start = QPixmap(start_path) if start_path else None
-        px_end = QPixmap(end_path) if end_path else None
-        if px_start and px_start.isNull():
-            px_start = None
-        if px_end and px_end.isNull():
-            px_end = None
+        pm = QPixmap(sprite_path)
+        if pm.isNull():
+            logger.warning(f'Filmstrip load failed: {sprite_path}')
+            return
         for track in self.tracks:
-            for cw in track["clips"]:
+            for cw in track.get('clips', []):
                 try:
-                    if not cw._alive:
-                        continue
+                    if id(cw) == clip_id and cw.isVisible():
+                        cw.set_filmstrip(pm, num_frames)
+                        logger.info(f'Filmstrip loaded: {os.path.basename(cw.clip_data.get("path",""))} frames={num_frames}')
+                        return
                 except RuntimeError:
-                    continue
-                if getattr(cw, '_clip_id', -1) == clip_id:
-                    cw.set_thumbnails(px_start, px_end)
-                    logger.info(f"Thumbnails loaded: {cw.clip_data.get('name','?')} start={'OK' if px_start else 'None'} end={'OK' if px_end else 'None'}")
-                    return
-
+                    pass
     def dragMoveEvent(self, event):
         event.acceptProposedAction()
 
