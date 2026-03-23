@@ -31,6 +31,7 @@ from aivideostudio.gui.panels.subtitle_panel import SubtitlePanel
 from aivideostudio.gui.panels.tts_panel import TTSPanel
 from aivideostudio.gui.panels.export_panel import ExportPanel
 from aivideostudio.core.playback_engine import TimelinePlaybackEngine
+from aivideostudio.engines.waveform_engine import generate_peaks, get_cached_peaks
 
 # Suppress harmless QFont pointSize warning from emoji rendering
 import warnings as _warnings
@@ -87,6 +88,26 @@ class ImportWorker(QThread):
             logger.error(f"Import probe failed: {e}")
             self.done.emit(self.file_path, None)
 
+
+
+
+class WaveformWorker(QThread):
+    """Generate waveform peaks in background."""
+    done = pyqtSignal(str, object)  # file_path, peaks list
+
+    def __init__(self, file_path, ffmpeg_path):
+        super().__init__()
+        self.file_path = file_path
+        self.ffmpeg_path = ffmpeg_path
+
+    def run(self):
+        try:
+            peaks = generate_peaks(self.file_path, self.ffmpeg_path)
+            self.done.emit(self.file_path, peaks)
+        except Exception as e:
+            from loguru import logger
+            logger.error(f"Waveform generation failed: {e}")
+            self.done.emit(self.file_path, None)
 
 class MainWindow(QMainWindow):
     def __init__(self, config):
@@ -441,6 +462,16 @@ class MainWindow(QMainWindow):
             w.done.connect(self._on_thumb)
             self._workers.append(w)
             w.start()
+        # Generate waveform for audio/video files
+        if info.has_audio:
+            cached = get_cached_peaks(file_path)
+            if cached:
+                self._apply_waveform(file_path, cached)
+            else:
+                ww = WaveformWorker(file_path, self.config.ffmpeg_path)
+                ww.done.connect(self._on_waveform_done)
+                self._workers.append(ww)
+                ww.start()
         self.preview.load(file_path)
 
     # ── Add to timeline (double-click) ──
@@ -477,7 +508,11 @@ class MainWindow(QMainWindow):
             "in_point": 0.0, "out_point": duration,
             "source_duration": duration, "track": track_idx,
         }
-        self.timeline_panel.add_clip(track_idx, clip_dict)
+        cw = self.timeline_panel.add_clip(track_idx, clip_dict)
+        if cw:
+            cached = get_cached_peaks(file_path)
+            if cached:
+                cw.set_waveform(cached)
         self._sync_timeline_to_preview()
         self.preview.seek_to(end_time)
         self.status_bar.showMessage(f"Added: {asset.name} at {end_time:.1f}s (track {track_idx})", 3000)
@@ -510,7 +545,11 @@ class MainWindow(QMainWindow):
             "in_point": 0.0, "out_point": duration,
             "source_duration": duration, "track": track_idx,
         }
-        self.timeline_panel.add_clip(track_idx, clip_dict)
+        cw = self.timeline_panel.add_clip(track_idx, clip_dict)
+        if cw:
+            cached = get_cached_peaks(file_path)
+            if cached:
+                cw.set_waveform(cached)
         self._sync_timeline_to_preview()
         self.preview.seek_to(time_sec)
         self.status_bar.showMessage(f"Dropped: {asset.name} at {time_sec:.1f}s on track {track_idx}", 3000)
@@ -686,6 +725,25 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.status_bar.showMessage(f"Export failed: {e}", 5000)
             logger.error(f"Subtitle export failed: {e}")
+
+
+    def _on_waveform_done(self, file_path, peaks):
+        """Called when waveform generation completes."""
+        if peaks:
+            self._apply_waveform(file_path, peaks)
+            logger.info(f"Waveform ready: {Path(file_path).name} ({len(peaks)} peaks)")
+
+    def _apply_waveform(self, file_path, peaks):
+        """Apply waveform peaks to all clips using this file."""
+        for track in self.timeline_panel.canvas.tracks:
+            for cw in track["clips"]:
+                try:
+                    if not cw._alive:
+                        continue
+                except (RuntimeError, AttributeError):
+                    continue
+                if cw.clip_data.get("path", "") == file_path:
+                    cw.set_waveform(peaks)
 
     def closeEvent(self, e):
         s = QSettings("AVS", "AIVideoStudio")
