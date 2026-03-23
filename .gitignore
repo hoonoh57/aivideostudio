@@ -26,3 +26,6 @@ scripts/libmpv-2.dll
 libmpv-2.dll
 *.dll
 setup_gpu.bat
+
+# Dev/debug scripts
+tools/
