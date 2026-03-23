@@ -199,47 +199,27 @@ class ClipWidget(QWidget):
         return None
 
     def mousePressEvent(self, event):
-        # Eye icon click (left-click on first 20px of header)
+        if not self._alive:
+            return
         if event.button() == Qt.MouseButton.LeftButton:
-            x, y = event.pos().x(), event.pos().y()
-            if x < 20 and y >= RULER_HEIGHT:
-                track_idx = self._track_at_y(y)
-                if 0 <= track_idx < len(self.tracks):
-                    self.tracks[track_idx]["enabled"] = not self.tracks[track_idx].get("enabled", True)
-                    self.update()
-                    event.accept()
-                    return
-            # Check for resize drag on track separator
-            if x < HEADER_WIDTH and y >= RULER_HEIGHT:
-                sep_idx = self._near_track_separator(y)
-                if sep_idx >= 0:
-                    self._resizing_track = sep_idx
-                    self._resize_start_y = y
-                    self._resize_start_h = self.tracks[sep_idx].get("height", TRACK_HEIGHT)
-                    self.setCursor(Qt.CursorShape.SplitVCursor)
-                    event.accept()
-                    return
-            # Playhead click on ruler
-            if y < RULER_HEIGHT and x >= HEADER_WIDTH:
-                t = (x - HEADER_WIDTH) / self._pps
-                self._playhead = max(0, t)
-                self._dragging_playhead = True
-                self.playhead_moved.emit(self._playhead)
-                self.seek_requested.emit(self._playhead)
-                self.update()
-                event.accept()
-                return
-        # Right-click on track header
-        if event.button() == Qt.MouseButton.RightButton:
-            x, y = event.pos().x(), event.pos().y()
-            if x < HEADER_WIDTH and y >= RULER_HEIGHT:
-                track_idx = self._track_at_y(y)
-                if 0 <= track_idx < len(self.tracks):
-                    self._show_track_menu(track_idx, event.globalPos())
-                    event.accept()
-                    return
-        super().mousePressEvent(event)
-
+            self.clicked.emit(self, event)
+            handle = self._hit_handle(event.pos())
+            if handle:
+                self._trimming = handle
+                self._original_in = self.clip_data.get("in_point", 0.0)
+                self._original_out = self.clip_data.get("out_point", self.clip_data.get("duration", 1.0))
+                self._original_start = self.clip_data.get("timeline_start", 0.0)
+                self._trim_start_global = event.globalPosition().toPoint()
+                self._drag_start = self._trim_start_global
+                self._pre_drag_data = dict(self.clip_data)
+            else:
+                self._dragging = True
+                self._drag_start = event.globalPosition().toPoint()
+                self._drag_start_x = self.x()
+                self._drag_start_y = self.y()
+                self._drag_start_track = self.clip_data.get("track", 0)
+                self._pre_drag_data = dict(self.clip_data)
+            event.accept()
 
     def mouseMoveEvent(self, event):
         if not self._alive:
@@ -306,19 +286,73 @@ class ClipWidget(QWidget):
             event.accept()
 
     def mouseReleaseEvent(self, event):
-        if self._resizing_track >= 0:
-            self._resizing_track = -1
-            if self._tool != "razor":
-                self.setCursor(Qt.CursorShape.ArrowCursor)
-            event.accept()
+        if not self._alive:
             return
-        if self._dragging_playhead:
-            self._dragging_playhead = False
-            if self._tool != "razor":
-                self.setCursor(Qt.CursorShape.ArrowCursor)
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
+        pre = getattr(self, '_pre_drag_data', None)
+        if pre is not None:
+            post = dict(self.clip_data)
+            moved = abs(pre.get("timeline_start",0) - post.get("timeline_start",0)) > 0.01
+            track_changed = pre.get("track", 0) != post.get("track", 0)
+            trimmed = (abs(pre.get("in_point",0) - post.get("in_point",0)) > 0.01 or
+                       abs(pre.get("duration",0) - post.get("duration",0)) > 0.01)
+            if self._dragging and track_changed:
+                canvas = self.parent()
+                if canvas and hasattr(canvas, 'tracks'):
+                    old_t = pre.get("track", 0)
+                    new_t = post.get("track", 0)
+                    if 0 <= old_t < len(canvas.tracks) and 0 <= new_t < len(canvas.tracks):
+                        if self in canvas.tracks[old_t]["clips"]:
+                            canvas.tracks[old_t]["clips"].remove(self)
+                        if self not in canvas.tracks[new_t]["clips"]:
+                            canvas.tracks[new_t]["clips"].append(self)
+                        self._track_type = canvas.tracks[new_t]["type"]
+                        self.update()
+                        logger.info(f"Clip moved from track {old_t} to {new_t}")
+            if (moved or trimmed or track_changed):
+                canvas = self.parent()
+                if canvas and hasattr(canvas, '_undo_manager') and canvas._undo_manager:
+                    cid = getattr(self, '_clip_id', -1)
+                    old_d, new_d = dict(pre), dict(post)
+                    action = "Move" if (moved or track_changed) else "Trim"
+                    name = post.get("name", "clip")
+                    def undo_move(c=canvas, ci=cid, od=old_d, nd=new_d):
+                        for track in c.tracks:
+                            for cl in list(track["clips"]):
+                                try:
+                                    if not cl._alive: continue
+                                except RuntimeError: continue
+                                if getattr(cl, '_clip_id', -1) == ci:
+                                    ot, nt = od.get("track",0), nd.get("track",0)
+                                    if ot != nt and 0 <= ot < len(c.tracks):
+                                        if cl in c.tracks[nt]["clips"]: c.tracks[nt]["clips"].remove(cl)
+                                        if cl not in c.tracks[ot]["clips"]: c.tracks[ot]["clips"].append(cl)
+                                        cl._track_type = c.tracks[ot]["type"]
+                                    cl.clip_data.update(od)
+                                    y = c._track_y(ot) + 2
+                                    cl.move(cl.x(), y)
+                                    cl.update_geometry(); c.update(); return
+                    def redo_move(c=canvas, ci=cid, od=old_d, nd=new_d):
+                        for track in c.tracks:
+                            for cl in list(track["clips"]):
+                                try:
+                                    if not cl._alive: continue
+                                except RuntimeError: continue
+                                if getattr(cl, '_clip_id', -1) == ci:
+                                    ot, nt = od.get("track",0), nd.get("track",0)
+                                    if ot != nt and 0 <= nt < len(c.tracks):
+                                        if cl in c.tracks[ot]["clips"]: c.tracks[ot]["clips"].remove(cl)
+                                        if cl not in c.tracks[nt]["clips"]: c.tracks[nt]["clips"].append(cl)
+                                        cl._track_type = c.tracks[nt]["type"]
+                                    cl.clip_data.update(nd)
+                                    y = c._track_y(nt) + 2
+                                    cl.move(cl.x(), y)
+                                    cl.update_geometry(); c.update(); return
+                    canvas._undo_manager.push(f"{action} {name}", undo_move, redo_move)
+            self._pre_drag_data = None
+        self._trimming = None
+        self._trim_start_global = None
+        self._dragging = False
+        event.accept()
 
     def mouseDoubleClickEvent(self, event):
         if self._alive:
