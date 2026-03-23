@@ -73,6 +73,7 @@ class ClipWidget(QWidget):
         self._drag_start_x = 0
         self._drag_start_y = 0
         self._drag_start_track = -1
+        self._drag_target_track = -1
         self._original_in = 0.0
         self._original_out = 0.0
         self._original_start = 0.0
@@ -273,24 +274,31 @@ class ClipWidget(QWidget):
                 self._drag_pending = False
             new_x = max(HEADER_WIDTH, self._drag_start_x + delta_x)
             new_y = self._drag_start_y + delta_y
-            # Snap Y to track rows (dynamic height)
+            # Determine target track from Y position
             canvas = self.parent()
+            target_track = self._drag_start_track
             if canvas and hasattr(canvas, '_track_at_y'):
-                track_idx, _ = canvas._track_at_y(new_y)
-                track_idx = max(0, min(track_idx, len(canvas.tracks) - 1))
-                if canvas.tracks[track_idx].get("lock"):
-                    track_idx = self._drag_start_track
-                snapped_y = canvas._track_y(track_idx) + 2
-                th = canvas.tracks[track_idx].get("height", TRACK_HEIGHT_DEFAULT)
+                candidate, _ = canvas._track_at_y(new_y)
+                candidate = max(0, min(candidate, len(canvas.tracks) - 1))
+                # Only allow move to same-type track that is not locked
+                src_type = canvas.tracks[self._drag_start_track]["type"] if self._drag_start_track < len(canvas.tracks) else "video"
+                if (canvas.tracks[candidate]["type"] == src_type
+                        and not canvas.tracks[candidate].get("lock")):
+                    target_track = candidate
+                else:
+                    target_track = self._drag_start_track
+                snapped_y = canvas._track_y(target_track) + 2
+                th = canvas.tracks[target_track].get("height", TRACK_HEIGHT_DEFAULT)
                 self.setMinimumHeight(th - 4)
                 self.setMaximumHeight(th - 4)
             else:
-                track_idx = max(0, int((new_y - RULER_HEIGHT) / TRACK_HEIGHT_DEFAULT))
-                snapped_y = RULER_HEIGHT + track_idx * TRACK_HEIGHT_DEFAULT + 2
+                snapped_y = RULER_HEIGHT + target_track * TRACK_HEIGHT_DEFAULT + 2
             self.move(new_x, snapped_y)
+            # Update timeline_start (horizontal position) during drag
             new_start = (new_x - HEADER_WIDTH) / self._pps
             self.clip_data["timeline_start"] = max(0, new_start)
-            self.clip_data["track"] = track_idx
+            # Store pending track but do NOT commit track change yet
+            self._drag_target_track = target_track
             self.moved.emit(self)
             event.accept()
 
@@ -304,19 +312,37 @@ class ClipWidget(QWidget):
             track_changed = pre.get("track", 0) != post.get("track", 0)
             trimmed = (abs(pre.get("in_point",0) - post.get("in_point",0)) > 0.01 or
                        abs(pre.get("duration",0) - post.get("duration",0)) > 0.01)
-            if self._dragging and track_changed:
-                canvas = self.parent()
-                if canvas and hasattr(canvas, 'tracks'):
-                    old_t = pre.get("track", 0)
-                    new_t = post.get("track", 0)
-                    if 0 <= old_t < len(canvas.tracks) and 0 <= new_t < len(canvas.tracks):
-                        if self in canvas.tracks[old_t]["clips"]:
-                            canvas.tracks[old_t]["clips"].remove(self)
-                        if self not in canvas.tracks[new_t]["clips"]:
-                            canvas.tracks[new_t]["clips"].append(self)
-                        self._track_type = canvas.tracks[new_t]["type"]
-                        self.update()
-                        logger.info(f"Clip moved from track {old_t} to {new_t}")
+            # Commit track change on drop: only same-type tracks allowed
+            if self._dragging:
+                target = getattr(self, '_drag_target_track', self._drag_start_track)
+                self.clip_data["track"] = target
+                post = dict(self.clip_data)  # refresh post after setting track
+                track_changed = pre.get("track", 0) != target
+                if track_changed:
+                    canvas = self.parent()
+                    if canvas and hasattr(canvas, 'tracks'):
+                        old_t = pre.get("track", 0)
+                        new_t = target
+                        if 0 <= old_t < len(canvas.tracks) and 0 <= new_t < len(canvas.tracks):
+                            src_type = canvas.tracks[old_t]["type"]
+                            dst_type = canvas.tracks[new_t]["type"]
+                            if src_type == dst_type and not canvas.tracks[new_t].get("lock"):
+                                if self in canvas.tracks[old_t]["clips"]:
+                                    canvas.tracks[old_t]["clips"].remove(self)
+                                if self not in canvas.tracks[new_t]["clips"]:
+                                    canvas.tracks[new_t]["clips"].append(self)
+                                self._track_type = dst_type
+                                self.update()
+                                logger.info(f"Clip moved from track {old_t} to {new_t}")
+                            else:
+                                # Revert: types don't match or target locked
+                                self.clip_data["track"] = old_t
+                                post = dict(self.clip_data)
+                                track_changed = False
+                                snapped_y = canvas._track_y(old_t) + 2
+                                self.move(self.x(), snapped_y)
+                                self.update_geometry()
+                                logger.info(f"Track move rejected: {src_type} -> {dst_type}")
             if (moved or trimmed or track_changed):
                 canvas = self.parent()
                 if canvas and hasattr(canvas, '_undo_manager') and canvas._undo_manager:
@@ -362,6 +388,7 @@ class ClipWidget(QWidget):
         self._trim_start_global = None
         self._dragging = False
         self._drag_pending = False
+        self._drag_target_track = -1
         event.accept()
 
     def mouseDoubleClickEvent(self, event):
