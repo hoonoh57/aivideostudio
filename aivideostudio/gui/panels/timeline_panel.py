@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush
 from loguru import logger
-from aivideostudio.engines.thumbnail_engine import extract_pair_async as _extract_thumb_pair_async
+from aivideostudio.engines.thumbnail_engine import ThumbnailWorkerThread
 
 def _qf(name, pixel_size, weight=None):
     """Create QFont with pixel size (avoids QFont pointSize <= 0 error)."""
@@ -584,7 +584,6 @@ class TimelineCanvas(QWidget):
         cw.show()
         # Request thumbnail extraction for video clips
         if track["type"] == "video" and clip_data.get("path"):
-            logger.info(f"add_clip: track={track['type']} path={clip_data.get('path','NONE')[:40]} ffmpeg={self._ffmpeg_path}")
             self._request_thumbnails(cw)
         self._update_total_duration()
         self._update_size()
@@ -1037,43 +1036,57 @@ class TimelineCanvas(QWidget):
                     cw.update()
 
     def _request_thumbnails(self, cw):
-        """Request async thumbnail extraction for a video clip."""
+        """Request thumbnail extraction using QThread (proven pattern)."""
         if cw._thumb_requested:
             return
+        cw._thumb_requested = True
         path = cw.clip_data.get("path", "")
         if not path:
-            logger.debug("Thumbnail skip: no path")
             return
         ext = Path(path).suffix.lower()
         image_exts = (".png", ".jpg", ".jpeg", ".bmp", ".gif",
                       ".tiff", ".tif", ".webp", ".svg")
         if ext in image_exts:
             from PyQt6.QtGui import QPixmap
-            px = QPixmap(path)
+            px = QPixmap(str(path))
             if not px.isNull():
                 cw.set_thumbnails(px, px)
-                cw._thumb_requested = True
                 logger.info(f"Thumbnail (image): {Path(path).name}")
             return
-        in_pt = cw.clip_data.get("in_point", 0)
+        in_pt = cw.clip_data.get("in_point", 0.0)
         out_pt = cw.clip_data.get("out_point",
-                    in_pt + cw.clip_data.get("duration", 1))
-        ffmpeg = self._ffmpeg_path
-        logger.info(f"Thumbnail request: {Path(path).name} in={in_pt:.1f} out={out_pt:.1f} ffmpeg={ffmpeg}")
-        cw._thumb_requested = True
-        def on_done(start_px, end_px, w=cw):
-            try:
-                if w._alive:
-                    w.set_thumbnails(start_px, end_px)
-                    logger.info(f"Thumbnails loaded: {w.clip_data.get('name','?')} start={'OK' if start_px else 'None'} end={'OK' if end_px else 'None'}")
-            except RuntimeError:
-                pass
-        _extract_thumb_pair_async(path, in_pt, out_pt, on_done, ffmpeg)
+                    in_pt + cw.clip_data.get("duration", 1.0))
+        ff = self._ffmpeg_path or "ffmpeg"
+        clip_id = getattr(cw, '_clip_id', -1)
+        logger.info(f"Thumbnail request: {Path(path).name} id={clip_id}")
+        worker = ThumbnailWorkerThread(clip_id, path, in_pt, out_pt, ff)
+        worker.thumbnails_ready.connect(self._on_thumbnails_ready)
+        if not hasattr(self, '_thumb_workers'):
+            self._thumb_workers = []
+        self._thumb_workers.append(worker)
+        worker.finished.connect(lambda w=worker: self._thumb_workers.remove(w) if w in self._thumb_workers else None)
+        worker.start()
 
-    # ── Drag & Drop ──
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasFormat("application/x-aivideo-asset") or event.mimeData().hasText():
-            event.acceptProposedAction()
+    def _on_thumbnails_ready(self, clip_id, start_path, end_path):
+        """Slot on main thread: create QPixmap and assign to clip."""
+        from PyQt6.QtGui import QPixmap
+        px_start = QPixmap(start_path) if start_path else None
+        px_end = QPixmap(end_path) if end_path else None
+        if px_start and px_start.isNull():
+            px_start = None
+        if px_end and px_end.isNull():
+            px_end = None
+        for track in self.tracks:
+            for cw in track["clips"]:
+                try:
+                    if not cw._alive:
+                        continue
+                except RuntimeError:
+                    continue
+                if getattr(cw, '_clip_id', -1) == clip_id:
+                    cw.set_thumbnails(px_start, px_end)
+                    logger.info(f"Thumbnails loaded: {cw.clip_data.get('name','?')} start={'OK' if px_start else 'None'} end={'OK' if px_end else 'None'}")
+                    return
 
     def dragMoveEvent(self, event):
         event.acceptProposedAction()
