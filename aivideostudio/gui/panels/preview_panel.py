@@ -196,8 +196,11 @@ class PreviewPanel(QWidget):
     def set_subtitle_events(self, events):
         self._subtitle_events = events or []
         logger.info(f"Preview: loaded {len(self._subtitle_events)} subtitle events")
+        # Load animated subtitles into mpv (with time correction)
+        self._load_ass_to_mpv()
 
     def _update_subtitle_overlay(self, tl_sec):
+        """Show QLabel for non-animated subtitles, hide for animated (mpv renders those)."""
         text = ""
         style = {}
         for ev in self._subtitle_events:
@@ -205,71 +208,90 @@ class PreviewPanel(QWidget):
                 text = ev["text"]
                 style = ev.get("style", {})
                 break
-        if text != self._current_sub_text:
-            self._current_sub_text = text
-            if text:
-                self._sub_label.setText(text)
-                self._apply_subtitle_style(style)
-                self._sub_label.show()
-            else:
+        # No subtitle at this time
+        if not text:
+            if self._current_sub_text:
+                self._current_sub_text = ""
+                self._last_applied_style = None
                 self._sub_label.hide()
-        # Also update mpv ASS subtitle if available
-        self._update_mpv_ass_subtitle(tl_sec)
+                self._sub_label.setText("")
+            return
+        # Check if this subtitle has animation (mpv handles it)
+        anim = style.get("animation", "None") if style else "None"
+        anim_tag = style.get("animation_tag", "") if style else ""
+        if anim != "None" and anim_tag:
+            # Animated subtitle: mpv ASS renders it, hide QLabel
+            if self._current_sub_text:
+                self._sub_label.hide()
+                self._sub_label.setText("")
+                self._current_sub_text = ""
+            return
+        # Non-animated: QLabel overlay
+        is_new = (text != self._current_sub_text or style != self._last_applied_style)
+        if is_new:
+            self._current_sub_text = text
+            self._last_applied_style = dict(style) if style else {}
+            self._sub_label.setText(text)
+            self._apply_subtitle_style(style)
+            self._sub_label.show()
 
     def _apply_subtitle_style(self, style):
-        """Apply per-subtitle style to the overlay QLabel (visual fallback)."""
+        """Apply per-subtitle style to the overlay QLabel with full rendering."""
+        from PyQt6.QtCore import Qt as _Qt
         if not style:
             self._sub_label.setStyleSheet(
                 "QLabel{color:white; font-size:15px; background:rgba(0,0,0,160);"
-                "padding:4px 12px; border-radius:4px; font-weight:bold;"
+                "padding:6px 14px; border-radius:4px; font-weight:bold;"
                 "font-family:'Malgun Gothic',sans-serif;}")
+            self._sub_label.setAlignment(_Qt.AlignmentFlag.AlignCenter)
             self._current_sub_alignment = 2
             self._reposition_sub_label()
             return
         font_name = style.get("font", "Malgun Gothic")
         font_size = style.get("size", 22)
-        preview_size = max(11, min(int(font_size * 0.7), 32))
+        # Scale for preview: ~60% of target size, clamped
+        preview_size = max(12, min(int(font_size * 0.65), 36))
         fc = style.get("font_color", "#ffffff")
         oc = style.get("outline_color", "#000000")
-        bold = "bold" if style.get("bold") else "normal"
-        italic = "italic" if style.get("italic") else "normal"
-        underline = "underline" if style.get("underline") else "none"
-        bg = "rgba(0,0,0,170)" if style.get("bg_box") else "rgba(0,0,0,0)"
+        bold_css = "bold" if style.get("bold") else "normal"
+        italic_css = "italic" if style.get("italic") else "normal"
+        underline_css = "underline" if style.get("underline") else "none"
         an = style.get("alignment", 2)
         self._current_sub_alignment = an
-        # Text shadow via CSS
-        shadow_css = ""
+        # Background
+        if style.get("bg_box"):
+            bg_color = style.get("bg_color", "#000000")
+            bg_css = f"background:rgba(0,0,0,170);"
+        else:
+            bg_css = "background:rgba(0,0,0,100);"
+        # Text outline via text-shadow (multiple offsets for outline effect)
         outline_size = style.get("outline_size", 2)
+        shadow_parts = []
         if outline_size > 0:
-            shadow_parts = []
-            for dx in (-1, 0, 1):
-                for dy in (-1, 0, 1):
-                    if dx == 0 and dy == 0: continue
-                    shadow_parts.append(f"{dx}px {dy}px 0px {oc}")
-            shadow_css = f"text-shadow: {', '.join(shadow_parts)};"
+            offsets = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+            if outline_size >= 2:
+                offsets += [(-2,0),(2,0),(0,-2),(0,2)]
+            for dx, dy in offsets:
+                shadow_parts.append(f"{dx}px {dy}px 0 {oc}")
         if style.get("shadow"):
-            shadow_css += f" text-shadow: 2px 2px 3px rgba(0,0,0,0.8);"
+            shadow_parts.append(f"2px 2px 4px rgba(0,0,0,0.7)")
+        shadow_css = f"text-shadow:{','.join(shadow_parts)};" if shadow_parts else ""
         # Horizontal alignment
         if an in (1, 4, 7):
-            h_align = "left"
+            align_flag = _Qt.AlignmentFlag.AlignLeft | _Qt.AlignmentFlag.AlignVCenter
         elif an in (3, 6, 9):
-            h_align = "right"
+            align_flag = _Qt.AlignmentFlag.AlignRight | _Qt.AlignmentFlag.AlignVCenter
         else:
-            h_align = "center"
+            align_flag = _Qt.AlignmentFlag.AlignCenter
+        self._sub_label.setAlignment(align_flag)
         self._sub_label.setStyleSheet(
             f"QLabel{{"
             f"color:{fc}; font-family:'{font_name}'; font-size:{preview_size}px;"
-            f"font-weight:{bold}; font-style:{italic}; text-decoration:{underline};"
-            f"background:{bg}; padding:6px 14px; border-radius:4px;"
-            f"text-align:{h_align}; {shadow_css}"
+            f"font-weight:{bold_css}; font-style:{italic_css};"
+            f"text-decoration:{underline_css};"
+            f"{bg_css} padding:6px 14px; border-radius:4px;"
+            f"{shadow_css}"
             f"}}")
-        from PyQt6.QtCore import Qt as _Qt
-        if an in (1, 4, 7):
-            self._sub_label.setAlignment(_Qt.AlignmentFlag.AlignLeft | _Qt.AlignmentFlag.AlignVCenter)
-        elif an in (3, 6, 9):
-            self._sub_label.setAlignment(_Qt.AlignmentFlag.AlignRight | _Qt.AlignmentFlag.AlignVCenter)
-        else:
-            self._sub_label.setAlignment(_Qt.AlignmentFlag.AlignCenter)
         self._reposition_sub_label()
 
     def _generate_ass_content(self):
@@ -359,7 +381,7 @@ class PreviewPanel(QWidget):
             line = (f"Dialogue: 0,{fmt_ass_time(s)},{fmt_ass_time(e)},"
                     f"Default,,0,0,0,,{tag_str}{text}")
             lines.append(line)
-        return "\n".join(lines)
+        return chr(10).join(lines)
 
     def _write_ass_temp(self):
         """Write current subtitle events as a temp ASS file and return path."""
@@ -384,35 +406,146 @@ class PreviewPanel(QWidget):
             return None
 
     def _update_mpv_ass_subtitle(self, tl_sec):
-        """Load ASS subtitle into mpv for proper rendering."""
-        pass  # mpv sub-file loading is done once via set_subtitle_events
+        """No-op: ASS is loaded once via set_subtitle_events/_load_ass_to_mpv."""
+        pass
 
     def set_subtitle_events(self, events):
         self._subtitle_events = events or []
         logger.info(f"Preview: loaded {len(self._subtitle_events)} subtitle events")
+        # Load animated subtitles into mpv (with time correction)
+        self._load_ass_to_mpv()
         # Generate and load ASS into mpv
         self._load_ass_to_mpv()
 
     def _load_ass_to_mpv(self):
-        """Generate temp ASS and load into mpv player."""
-        if not self._player:
+        """Load ASS with time-corrected events into mpv.
+        ASS time = timeline_time - video_clip.timeline_start + video_clip.in_point
+        This converts timeline absolute time to video source time."""
+        if not self._player or not self._subtitle_events:
+            self._ass_tmp_path = None
             return
-        # Remove existing subtitle tracks
+        # Remove old subtitle
         try:
             self._player.command("sub-remove")
         except Exception:
             pass
-        if not self._subtitle_events:
+        # We need the active video clip info to compute time offset
+        if not self._engine:
             return
-        ass_path = self._write_ass_temp()
-        if ass_path:
-            try:
-                self._player.command("sub-add", ass_path, "select")
-                logger.info(f"mpv: ASS subtitle loaded ({len(self._subtitle_events)} events)")
-            except Exception as e:
-                logger.warning(f"mpv sub-add failed: {e}")
+        # Build ASS content with source-time correction
+        ass_lines = [
+            "[Script Info]",
+            "ScriptType: v4.00+",
+            "PlayResX: 1920",
+            "PlayResY: 1080",
+            "",
+            "[V4+ Styles]",
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+            "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, MarginV, Encoding",
+            "Style: Default,Malgun Gothic,22,&H00FFFFFF,&H000000FF,"
+            "&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,20,20,30,1",
+            "",
+            "[Events]",
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+        ]
+        has_animated = False
+        for ev in self._subtitle_events:
+            style = ev.get("style", {})
+            anim = style.get("animation", "None")
+            anim_tag = style.get("animation_tag", "")
+            if anim == "None" or not anim_tag:
+                continue  # Non-animated: handled by QLabel
+            has_animated = True
+            tl_start = ev["start"]
+            tl_end = ev["end"]
+            text = ev.get("text", "")
+            # Find which video clip covers this subtitle time
+            clip = self._engine.clip_at(tl_start)
+            if not clip:
+                continue
+            clip_tl_start = clip.get("timeline_start", 0)
+            clip_in_point = clip.get("in_point", 0)
+            # Convert timeline time -> video source time
+            src_start = clip_in_point + (tl_start - clip_tl_start)
+            src_end = clip_in_point + (tl_end - clip_tl_start)
+            if src_start < 0:
+                src_start = 0
+            # Build ASS tags
+            tags = []
+            if style.get("font"):
+                tags.append(f"\\fn{style['font']}")
+            if style.get("size"):
+                tags.append(f"\\fs{style['size']}")
+            if style.get("bold"):
+                tags.append("\\b1")
+            if style.get("italic"):
+                tags.append("\\i1")
+            if style.get("font_color"):
+                c = style["font_color"].lstrip("#")
+                if len(c) == 6:
+                    r, g, b = c[0:2], c[2:4], c[4:6]
+                    tags.append(f"\\c&H{b}{g}{r}&")
+            if style.get("outline_color"):
+                c = style["outline_color"].lstrip("#")
+                if len(c) == 6:
+                    r, g, b = c[0:2], c[2:4], c[4:6]
+                    tags.append(f"\\3c&H{b}{g}{r}&")
+            if style.get("outline_size") is not None:
+                tags.append(f"\\bord{style['outline_size']}")
+            if style.get("shadow") is False:
+                tags.append("\\shad0")
+            if style.get("alignment"):
+                tags.append(f"\\an{style['alignment']}")
+            # Animation handling
+            if anim_tag == "__TYPEWRITER__":
+                dur_ms = int((src_end - src_start) * 1000)
+                char_count = max(1, len(text))
+                per_char = max(1, dur_ms // char_count)
+                tag_prefix = "{" + "".join(tags) + "}" if tags else ""
+                tw_text = ""
+                for ch in text:
+                    tw_text += "{\\k" + str(per_char // 10) + "}" + ch
+                final_text = tag_prefix + tw_text
+            else:
+                # Other animations: embed tag directly
+                clean_anim = anim_tag.replace("{", "").replace("}", "")
+                tags.append(clean_anim)
+                tag_str = "{" + "".join(tags) + "}" if tags else ""
+                final_text = tag_str + text
+            def fmt_t(sec):
+                h = int(sec // 3600)
+                m = int((sec % 3600) // 60)
+                s2 = sec % 60
+                return f"{h}:{m:02d}:{s2:05.2f}"
+            line = f"Dialogue: 0,{fmt_t(src_start)},{fmt_t(src_end)},Default,,0,0,0,,{final_text}"
+            ass_lines.append(line)
+        if not has_animated:
+            self._ass_tmp_path = None
+            return
+        # Write temp ASS
+        import tempfile
+        try:
+            if self._ass_tmp_path and os.path.exists(self._ass_tmp_path):
+                os.unlink(self._ass_tmp_path)
+        except Exception:
+            pass
+        try:
+            fd, path = tempfile.mkstemp(suffix=".ass", prefix="aivs_anim_")
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(chr(10).join(ass_lines))
+            self._ass_tmp_path = path
+            self._player.command("sub-add", path, "select")
+            self._player.sub_visibility = True
+            logger.info(f"mpv: animated ASS loaded ({len(ass_lines)} lines)")
+            for line in ass_lines:
+                if line.startswith("Dialogue:"):
+                    logger.debug(f"  ASS: {line[:120]}")
+        except Exception as e:
+            logger.warning(f"mpv animated ASS failed: {e}")
+            self._ass_tmp_path = None
 
-    # ── engine binding ──────────────────────────────────────────
     def set_engine(self, engine):
         self._engine = engine
 
@@ -469,6 +602,13 @@ class PreviewPanel(QWidget):
     # ── file load + seek ────────────────────────────────────────
     def _load_file(self, path, seek_sec=0.0, pause=True):
         self._ensure_player()
+        # Clear mpv internal subtitles only if no animated ASS is active
+        if not self._ass_tmp_path:
+            try:
+                self._player.sub_visibility = False
+                self._player.command("sub-remove")
+            except Exception:
+                pass
         if self._loaded_path == path:
             if pause:
                 self._player.pause = True
@@ -615,6 +755,9 @@ class PreviewPanel(QWidget):
         if self._engine:
             self._engine.playhead = 0.0
             self._seek_to_playhead()
+        self._sub_label.hide()
+        self._sub_label.setText("")
+        self._current_sub_text = ""
         self._update_ui(0.0)
 
     def _seek_to_playhead(self):
