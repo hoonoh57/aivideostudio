@@ -306,87 +306,19 @@ class ClipWidget(QWidget):
             event.accept()
 
     def mouseReleaseEvent(self, event):
-        if not self._alive:
+        if self._resizing_track >= 0:
+            self._resizing_track = -1
+            if self._tool != "razor":
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+            event.accept()
             return
-        pre = getattr(self, '_pre_drag_data', None)
-        if pre is not None:
-            post = dict(self.clip_data)
-            moved = abs(pre.get("timeline_start",0) - post.get("timeline_start",0)) > 0.01
-            track_changed = pre.get("track", 0) != post.get("track", 0)
-            trimmed = (abs(pre.get("in_point",0) - post.get("in_point",0)) > 0.01 or
-                       abs(pre.get("duration",0) - post.get("duration",0)) > 0.01)
-            # Move clip between tracks if needed
-            if self._dragging and track_changed:
-                canvas = self.parent()
-                if canvas and hasattr(canvas, 'tracks'):
-                    old_t = pre.get("track", 0)
-                    new_t = post.get("track", 0)
-                    if 0 <= old_t < len(canvas.tracks) and 0 <= new_t < len(canvas.tracks):
-                        if self in canvas.tracks[old_t]["clips"]:
-                            canvas.tracks[old_t]["clips"].remove(self)
-                        if self not in canvas.tracks[new_t]["clips"]:
-                            canvas.tracks[new_t]["clips"].append(self)
-                        # Update track type for coloring
-                        self._track_type = canvas.tracks[new_t]["type"]
-                        self.update()
-                        logger.info(f"Clip moved from track {old_t} to {new_t}")
-            if (moved or trimmed or track_changed):
-                canvas = self.parent()
-                if canvas and hasattr(canvas, '_undo_manager') and canvas._undo_manager:
-                    cid = getattr(self, '_clip_id', -1)
-                    old_d = dict(pre)
-                    new_d = dict(post)
-                    action = "Move" if (moved or track_changed) else "Trim"
-                    name = post.get("name", "clip")
-                    def undo_move(c=canvas, ci=cid, od=old_d, nd=new_d):
-                        for track in c.tracks:
-                            for cl in list(track["clips"]):
-                                try:
-                                    if not cl._alive: continue
-                                except RuntimeError: continue
-                                if getattr(cl, '_clip_id', -1) == ci:
-                                    # Move back to old track if needed
-                                    ot = od.get("track", 0)
-                                    nt = nd.get("track", 0)
-                                    if ot != nt and 0 <= ot < len(c.tracks):
-                                        if cl in c.tracks[nt]["clips"]:
-                                            c.tracks[nt]["clips"].remove(cl)
-                                        if cl not in c.tracks[ot]["clips"]:
-                                            c.tracks[ot]["clips"].append(cl)
-                                        cl._track_type = c.tracks[ot]["type"]
-                                    cl.clip_data.update(od)
-                                    y = c._track_y(ot) if hasattr(c, '_track_y') else (RULER_HEIGHT + ot * TRACK_HEIGHT + 2)
-                                    cl.move(cl.x(), y)
-                                    cl.update_geometry()
-                                    c.update()
-                                    return
-                    def redo_move(c=canvas, ci=cid, od=old_d, nd=new_d):
-                        for track in c.tracks:
-                            for cl in list(track["clips"]):
-                                try:
-                                    if not cl._alive: continue
-                                except RuntimeError: continue
-                                if getattr(cl, '_clip_id', -1) == ci:
-                                    ot = od.get("track", 0)
-                                    nt = nd.get("track", 0)
-                                    if ot != nt and 0 <= nt < len(c.tracks):
-                                        if cl in c.tracks[ot]["clips"]:
-                                            c.tracks[ot]["clips"].remove(cl)
-                                        if cl not in c.tracks[nt]["clips"]:
-                                            c.tracks[nt]["clips"].append(cl)
-                                        cl._track_type = c.tracks[nt]["type"]
-                                    cl.clip_data.update(nd)
-                                    y = c._track_y(nt) if hasattr(c, '_track_y') else (RULER_HEIGHT + nt * TRACK_HEIGHT + 2)
-                                    cl.move(cl.x(), y)
-                                    cl.update_geometry()
-                                    c.update()
-                                    return
-                    canvas._undo_manager.push(f"{action} {name}", undo_move, redo_move)
-            self._pre_drag_data = None
-        self._trimming = None
-        self._trim_start_global = None
-        self._dragging = False
-        event.accept()
+        if self._dragging_playhead:
+            self._dragging_playhead = False
+            if self._tool != "razor":
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         if self._alive:
@@ -504,6 +436,7 @@ class TimelineCanvas(QWidget):
             "name": name, "type": track_type, "clips": [],
             "mute": False, "solo": False, "lock": False,
             "visible": True, "enabled": True,
+            "height": TRACK_HEIGHT,
             "height": TRACK_HEIGHT_DEFAULT,
         }
         self.tracks.append(track)
@@ -969,13 +902,13 @@ class TimelineCanvas(QWidget):
     def _reposition_all_clips(self):
         """Reposition all clip widgets after track add/remove/resize."""
         for i, track in enumerate(self.tracks):
-            y = self._track_y(i)
-            th = track.get("height", TRACK_HEIGHT_DEFAULT)
+            th = track.get("height", TRACK_HEIGHT)
+            ty = self._track_y(i)
             for cw in track["clips"]:
                 if cw._alive:
                     cw.setMinimumHeight(th - 4)
                     cw.setMaximumHeight(th - 4)
-                    cw.move(cw.x(), y + 2)
+                    cw.move(cw.x(), ty + 2)
                     cw.clip_data["track"] = i
 
     # ── Drag & Drop ──
@@ -1037,22 +970,24 @@ class TimelineCanvas(QWidget):
         p.fillRect(self.rect(), CLR_BG)
 
         for i, track in enumerate(self.tracks):
+            th = track.get("height", TRACK_HEIGHT)
             y = self._track_y(i)
-            th = track.get("height", TRACK_HEIGHT_DEFAULT)
             enabled = track.get("enabled", True)
             color = CLR_TRACK if i % 2 == 0 else CLR_TRACK_ALT
             if not enabled:
                 color = CLR_TRACK_DISABLED
             p.fillRect(0, y, w, th, color)
 
+            # Draw disabled overlay on clip area
             if not enabled:
                 p.fillRect(HEADER_WIDTH, y, w - HEADER_WIDTH, th, CLR_DISABLED_OVERLAY)
 
-            # Eye icon
-            eye = "👁" if enabled else "ⓧ"
-            p.setFont(_qf("Segoe UI Emoji", 14))
+            # Header - Eye icon
+            eye = "O" if enabled else "X"
+            p.setFont(_qf("Segoe UI", 12))
             p.setPen(QColor(200, 200, 200) if enabled else QColor(100, 60, 60))
-            p.drawText(QRect(2, y, 18, th), Qt.AlignmentFlag.AlignCenter, eye)
+            p.drawText(QRect(2, y, 18, th),
+                       Qt.AlignmentFlag.AlignCenter, eye)
 
             # Track label
             p.setPen(CLR_RULER_TEXT if enabled else QColor(100, 100, 100))
@@ -1067,14 +1002,16 @@ class TimelineCanvas(QWidget):
             p.drawText(QRect(22, y, HEADER_WIDTH - 26, th),
                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
 
-            # Resize handle (bottom 4px of separator)
-            p.setPen(QPen(QColor(80, 80, 90), 1))
+            # Track separator (draggable)
+            p.setPen(QPen(QColor(80, 80, 90), 2))
             p.drawLine(0, y + th - 1, w, y + th - 1)
-            # Draw resize grip dots
-            p.setPen(QPen(QColor(120, 120, 130), 1))
-            grip_y = y + th - 2
-            for gx in range(HEADER_WIDTH // 2 - 10, HEADER_WIDTH // 2 + 10, 4):
-                p.drawPoint(gx, grip_y)
+
+            # Resize grip dots
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(QColor(120, 120, 130)))
+            grip_y = y + th - 4
+            for dx in (HEADER_WIDTH // 2 - 12, HEADER_WIDTH // 2, HEADER_WIDTH // 2 + 12):
+                p.drawEllipse(QPoint(dx, grip_y), 2, 2)
 
         # Ruler
         p.fillRect(HEADER_WIDTH, 0, w - HEADER_WIDTH, RULER_HEIGHT, CLR_RULER)
@@ -1112,62 +1049,45 @@ class TimelineCanvas(QWidget):
         p.end()
 
     def mousePressEvent(self, event):
-        # Eye icon click (left-click on first 20px of header)
         if event.button() == Qt.MouseButton.LeftButton:
             x, y = event.pos().x(), event.pos().y()
+            # Eye icon click
             if x < 20 and y >= RULER_HEIGHT:
-                track_idx, _ = self._track_at_y(y)
+                track_idx = self._track_at_y(y)
                 if 0 <= track_idx < len(self.tracks):
                     self.tracks[track_idx]["enabled"] = not self.tracks[track_idx].get("enabled", True)
-                    state = "ON" if self.tracks[track_idx]["enabled"] else "OFF"
-                    logger.info(f"Track {track_idx} visibility: {state}")
                     self.update()
                     event.accept()
                     return
-
+            # Resize drag on track separator
+            if x < HEADER_WIDTH and y >= RULER_HEIGHT:
+                sep_idx = self._near_track_separator(y)
+                if sep_idx >= 0:
+                    self._resizing_track = sep_idx
+                    self._resize_start_y = y
+                    self._resize_start_h = self.tracks[sep_idx].get("height", TRACK_HEIGHT)
+                    self.setCursor(Qt.CursorShape.SplitVCursor)
+                    event.accept()
+                    return
+            # Playhead click on ruler
+            if y < RULER_HEIGHT and x >= HEADER_WIDTH:
+                t = (x - HEADER_WIDTH) / self._pps
+                self._playhead = max(0, t)
+                self._dragging_playhead = True
+                self.playhead_moved.emit(self._playhead)
+                self.seek_requested.emit(self._playhead)
+                self.update()
+                event.accept()
+                return
+        # Right-click on track header
         if event.button() == Qt.MouseButton.RightButton:
             x, y = event.pos().x(), event.pos().y()
             if x < HEADER_WIDTH and y >= RULER_HEIGHT:
-                track_idx, _ = self._track_at_y(y)
+                track_idx = self._track_at_y(y)
                 if 0 <= track_idx < len(self.tracks):
-                    self._show_track_menu(track_idx, event.globalPosition().toPoint())
+                    self._show_track_menu(track_idx, event.globalPos())
                     event.accept()
                     return
-        if event.button() == Qt.MouseButton.LeftButton:
-            x, y = event.pos().x(), event.pos().y()
-            # Check if dragging track separator to resize
-            if x < HEADER_WIDTH and y >= RULER_HEIGHT:
-                cy = RULER_HEIGHT
-                for ri, rt in enumerate(self.tracks):
-                    rh = rt.get("height", TRACK_HEIGHT_DEFAULT)
-                    sep_y = cy + rh
-                    if abs(y - sep_y) <= 4:
-                        self._resizing_track = ri
-                        self._resize_start_y = y
-                        self._resize_start_h = rh
-                        self.setCursor(Qt.CursorShape.SplitVCursor)
-                        event.accept()
-                        return
-                    cy += rh
-            # Check if clicking near playhead for drag (within 10px)
-            px = int(self._playhead * self._pps) + HEADER_WIDTH
-            if abs(x - px) < 10 and y < RULER_HEIGHT + len(self.tracks) * TRACK_HEIGHT:
-                self._dragging_playhead = True
-                self._playhead = max(0, (x - HEADER_WIDTH) / self._pps)
-                self.playhead_moved.emit(self._playhead)
-                self.seek_requested.emit(self._playhead)
-                self.setCursor(Qt.CursorShape.SizeHorCursor)
-                self.update()
-                event.accept()
-                return
-            if y < RULER_HEIGHT and x > HEADER_WIDTH:
-                self._dragging_playhead = True
-                self._playhead = max(0, (x - HEADER_WIDTH) / self._pps)
-                self.playhead_moved.emit(self._playhead)
-                self.seek_requested.emit(self._playhead)
-                self.update()
-                event.accept()
-                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -1191,7 +1111,7 @@ class TimelineCanvas(QWidget):
             self.update()
             event.accept()
             return
-        # Cursor change near separator
+        # Cursor near separator
         if x < HEADER_WIDTH and y >= RULER_HEIGHT:
             if self._near_track_separator(y) >= 0:
                 self.setCursor(Qt.CursorShape.SplitVCursor)
@@ -1204,7 +1124,6 @@ class TimelineCanvas(QWidget):
             elif self.cursor().shape() == Qt.CursorShape.SplitVCursor:
                 self.setCursor(Qt.CursorShape.ArrowCursor)
         super().mouseMoveEvent(event)
-
 
     def mouseReleaseEvent(self, event):
         if self._resizing_track >= 0:
