@@ -136,25 +136,30 @@ class TimelinePlaybackEngine:
         return best
 
     def get_ordered_video_segments(self):
-        """Return all video segments sorted by timeline_start.
-        Respects enabled flag — disabled tracks are excluded from export.
-        """
+        """Return video segments from the FIRST enabled video track only.
+        Multiple video tracks are layered (overlay), not concatenated.
+        For export, we use only the primary (first) video track."""
         segments = []
+        # Find first enabled video track
+        target_track = None
         for track in self._tracks:
-            if track.get("type") != "video":
+            if track.get("type") == "video" and track.get("enabled", True):
+                target_track = track
+                break
+        if target_track is None:
+            return []
+        for clip in target_track.get("clips", []):
+            cs = clip.get("timeline_start", 0)
+            dur = clip.get("duration", 0)
+            if dur < 0.01:
                 continue
-            if not track.get("enabled", True):
-                continue
-            for clip in track.get("clips", []):
-                cs = clip.get("timeline_start", 0)
-                dur = clip.get("duration", 0)
-                segments.append({
-                    "timeline_start": cs,
-                    "timeline_end": cs + dur,
-                    "path": clip.get("path", ""),
-                    "in_point": clip.get("in_point", 0),
-                    "out_point": clip.get("out_point", clip.get("in_point", 0) + dur),
-                })
+            segments.append({
+                "timeline_start": cs,
+                "timeline_end": cs + dur,
+                "path": clip.get("path", ""),
+                "in_point": clip.get("in_point", 0),
+                "out_point": clip.get("out_point", clip.get("in_point", 0) + dur),
+            })
         segments.sort(key=lambda s: s["timeline_start"])
         return segments
 
@@ -214,4 +219,3 @@ class TimelinePlaybackEngine:
                 })
         segments.sort(key=lambda s: s["timeline_start"])
         return segments
-

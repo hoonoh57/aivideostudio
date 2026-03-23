@@ -345,6 +345,9 @@ class MainWindow(QMainWindow):
         self._refresh_subtitle_overlay()
         self.status_bar.showMessage(f"Opened: {path}", 5000)
         logger.info(f"Project opened: {path}")
+        # Update export panel with timeline info
+        if hasattr(self.export_panel, "_update_source_info"):
+            self.export_panel._update_source_info()
 
     def _new_project(self):
         reply = QMessageBox.question(
@@ -653,6 +656,8 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Subtitle: {Path(path).name} ({count} lines)", 5000)
         else:
             self.status_bar.showMessage(f"Subtitle ready: {Path(path).name}", 5000)
+        if hasattr(self.export_panel, "_update_source_info"):
+            self.export_panel._update_source_info()
 
     def _on_tts_ready(self, path):
         self.asset_panel.add_file(path)

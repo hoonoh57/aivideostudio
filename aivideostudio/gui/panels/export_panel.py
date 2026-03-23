@@ -146,8 +146,46 @@ class ExportPanel(QWidget):
 
     # External API
     def set_timeline_canvas(self, canvas):
-        """Connect to TimelineCanvas for zone (In/Out) range."""
+        """Connect to timeline canvas for zone and track info."""
         self._timeline_canvas = canvas
+        self._update_source_info()
+
+    def _update_source_info(self):
+        """Update Source Info from timeline tracks."""
+        if not self._timeline_canvas:
+            return
+        tracks = self._timeline_canvas.tracks
+        # Find first video track info
+        for track in tracks:
+            if track.get("type") == "video" and track.get("enabled", True):
+                for clip in track.get("clips", []):
+                    cw = clip if isinstance(clip, dict) else None
+                    if cw is None and hasattr(clip, "clip_data"):
+                        cw = clip.clip_data
+                    if cw:
+                        p = cw.get("path", "")
+                        dur = cw.get("duration", 0)
+                        if p:
+                            self.lbl_input.setText("Input: " + _Path(p).name)
+                            if dur > 0:
+                                m, s = divmod(int(dur), 60)
+                                self.lbl_dur.setText(f"Duration: {m:02d}:{s:02d}")
+                            break
+                break
+        # Find subtitle
+        for track in tracks:
+            if track.get("type") == "subtitle" and track.get("enabled", True):
+                for clip in track.get("clips", []):
+                    cw = clip if isinstance(clip, dict) else None
+                    if cw is None and hasattr(clip, "clip_data"):
+                        cw = clip.clip_data
+                    if cw:
+                        p = cw.get("path", "")
+                        if p and _Path(p).exists() and _Path(p).suffix.lower() in (".srt", ".ass", ".vtt"):
+                            self._subtitle_path = str(p)
+                            self.lbl_sub.setText("Subtitle: " + _Path(p).name)
+                            break
+                break
 
     def _get_export_range(self):
         """Return (start_sec, end_sec) or None for full timeline."""
@@ -192,6 +230,18 @@ class ExportPanel(QWidget):
     # Export logic
     def _on_export(self):
         segments = self._get_video_segments()
+        # Filter out invalid segments (duration=0, in_point beyond source)
+        valid_segs = []
+        for seg in segments:
+            dur = seg["timeline_end"] - seg["timeline_start"]
+            if dur < 0.01:
+                logger.warning(f"Skipping zero-duration segment: {seg}")
+                continue
+            valid_segs.append(seg)
+        segments = valid_segs
+        logger.info(f"Video segments for export: {len(segments)}")
+        for idx, seg in enumerate(segments):
+            logger.info(f"  Seg {idx}: path={seg['path']} tl_start={seg['timeline_start']:.2f} tl_end={seg['timeline_end']:.2f} in_pt={seg.get('in_point',0):.2f}")
         if not segments:
             QMessageBox.warning(self, "Export Error",
                                 "No clips on timeline.\nAdd clips to timeline first.")
@@ -233,7 +283,26 @@ class ExportPanel(QWidget):
 
         preset_name = self.combo_preset.currentText()
         preset = PRESETS[preset_name]
-        sub = self._subtitle_path if self.chk_burn.isChecked() else None
+        # Get subtitle path - from stored path or auto-detect from timeline
+        sub = None
+        if self.chk_burn.isChecked():
+            sub = self._subtitle_path
+            if not sub and self._timeline_canvas:
+                # Auto-detect subtitle from timeline tracks
+                for track in self._timeline_canvas.tracks:
+                    if track.get("type") == "subtitle" and track.get("enabled", True):
+                        for clip in track.get("clips", []):
+                            cw = clip if isinstance(clip, dict) else None
+                            if cw is None and hasattr(clip, "clip_data"):
+                                cw = clip.clip_data
+                            if cw:
+                                p = cw.get("path", "")
+                                if p and _Path(p).exists() and _Path(p).suffix.lower() in (".srt", ".ass", ".vtt"):
+                                    sub = str(p)
+                                    logger.info(f"Auto-detected subtitle: {sub}")
+                                    break
+                        if sub:
+                            break
         crop = self.chk_crop.isChecked()
         use_gpu = preset.get("gpu", False)
         mix_audio = self.chk_mix_audio.isChecked()
@@ -281,8 +350,7 @@ class ExportPanel(QWidget):
             pw, ph = preset["w"], preset["h"]
             fps = preset["fps"]
             vcodec = self._get_vcodec(use_gpu, preset)
-            num_segs = len(video_segs)
-
+            
             scale_vf = ""
             if pw > 0 and ph > 0:
                 if crop and ph > pw:
@@ -290,20 +358,30 @@ class ExportPanel(QWidget):
                 else:
                     scale_vf = (f"scale={pw}:{ph}:force_original_aspect_ratio=decrease,"
                                 f"pad={pw}:{ph}:(ow-iw)/2:(oh-ih)/2:black")
-
+            
+            # Log segments for debugging
+            logger.info(f"Export: {len(video_segs)} video segments, {len(audio_segs)} audio segments")
+            for si, seg in enumerate(video_segs):
+                logger.info(f"  vSeg {si}: {seg['path']} tl={seg['timeline_start']:.2f}-{seg['timeline_end']:.2f} in_pt={seg.get('in_point',0):.2f}")
+            
             # Step 1: Encode each video segment
-            part_files = []
+            part_files = {}  # index → path
+            num_segs = len(video_segs)
             for i, seg in enumerate(video_segs):
-                pct = int(i / num_segs * 40)
+                pct = int(i / max(num_segs, 1) * 40)
                 self._sig.status.emit(f"Encoding segment {i+1}/{num_segs}...")
                 self._sig.progress.emit(pct)
-
+                
                 part_path = os.path.join(tmpdir, f"part_{i:04d}.mp4")
                 path = seg["path"]
                 ext = _Path(path).suffix.lower()
                 is_image = ext in IMAGE_EXTS
                 dur = seg["timeline_end"] - seg["timeline_start"]
-
+                
+                if dur < 0.01:
+                    logger.warning(f"Skipping segment {i}: duration={dur:.3f}s")
+                    continue
+                
                 if is_image:
                     cmd = [self._ffmpeg, "-y", "-hide_banner",
                            "-loop", "1", "-framerate", str(fps or 30),
@@ -328,57 +406,108 @@ class ExportPanel(QWidget):
                     cmd += ["-c:v"] + list(vcodec)
                     cmd += ["-c:a", "aac", "-b:a", "192k",
                             "-pix_fmt", "yuv420p", part_path]
-
+                
                 logger.info(f"Segment {i}: {' '.join(cmd)}")
                 self._process = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     creationflags=0x08000000)
                 _, stderr_bytes = self._process.communicate()
                 stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-
+                
                 if self._process.returncode != 0:
-                    self._sig.error.emit(f"Segment {i+1} failed:\n{stderr[-300:]}")
-                    return
+                    logger.error(f"Segment {i} failed (rc={self._process.returncode}):\n{stderr}")
+                    # Try CPU fallback if GPU encoding failed
+                    if any(kw in stderr.lower() for kw in ["nvenc", "cuda", "gpu", "device", "hwaccel", "invalid argument"]):
+                        logger.info(f"Segment {i}: Retrying with CPU encoder (libx264)...")
+                        self._sig.status.emit(f"Segment {i+1} GPU failed, retrying CPU...")
+                        cpu_cmd = []
+                        skip_next = False
+                        for ci, arg in enumerate(cmd):
+                            if skip_next:
+                                skip_next = False
+                                continue
+                            if arg in ("h264_nvenc", "hevc_nvenc"):
+                                cpu_cmd.append("libx264")
+                            elif arg in ("-preset", "-rc", "-cq", "-maxrate") and ci + 1 < len(cmd):
+                                if arg == "-preset":
+                                    cpu_cmd.append("-preset")
+                                    cpu_cmd.append("medium")
+                                    skip_next = True
+                                elif arg in ("-rc", "-cq", "-maxrate"):
+                                    skip_next = True  # skip GPU-only params
+                                else:
+                                    cpu_cmd.append(arg)
+                            elif arg in ("vbr", "p4"):
+                                continue  # skip GPU-only values
+                            else:
+                                cpu_cmd.append(arg)
+                        # Replace -b:v with CRF for CPU
+                        final_cmd = []
+                        skip_next2 = False
+                        for ci, arg in enumerate(cpu_cmd):
+                            if skip_next2:
+                                skip_next2 = False
+                                continue
+                            if arg == "-b:v" and ci + 1 < len(cpu_cmd):
+                                final_cmd.extend(["-crf", "20"])
+                                skip_next2 = True
+                            else:
+                                final_cmd.append(arg)
+                        logger.info(f"CPU fallback: {' '.join(final_cmd)}")
+                        self._process = subprocess.Popen(
+                            final_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            creationflags=0x08000000)
+                        _, stderr_bytes2 = self._process.communicate()
+                        stderr2 = stderr_bytes2.decode("utf-8", errors="replace") if stderr_bytes2 else ""
+                        if self._process.returncode != 0:
+                            logger.error(f"CPU fallback also failed: {stderr2}")
+                            continue
+                    else:
+                        continue  # non-GPU error, skip segment
                 if _Path(part_path).exists():
-                    part_files.append(part_path)
-
+                    part_files[i] = part_path
+            
             if not part_files:
                 self._sig.error.emit("No segments were created.")
                 return
-
-            # Step 2: Insert gaps
+            
+            # Step 2: Insert black gaps between segments
             final_parts = []
-            for i, seg in enumerate(video_segs):
+            exported_indices = sorted(part_files.keys())
+            for pos, seg_i in enumerate(exported_indices):
+                seg = video_segs[seg_i]
                 gap_start = seg["timeline_start"]
-                if i == 0 and gap_start > 0.05:
+                if pos == 0 and gap_start > 0.05:
                     gap_path = os.path.join(tmpdir, "gap_start.mp4")
                     self._make_black(gap_path, gap_start, pw or 1920, ph or 1080, fps or 30, vcodec)
                     if _Path(gap_path).exists():
+                        logger.info(f"Gap added: {gap_path} exists={_Path(gap_path).exists()}")
                         final_parts.append(gap_path)
-                elif i > 0:
-                    prev_end = video_segs[i-1]["timeline_end"]
+                elif pos > 0:
+                    prev_seg_i = exported_indices[pos - 1]
+                    prev_end = video_segs[prev_seg_i]["timeline_end"]
                     gap_dur = gap_start - prev_end
                     if gap_dur > 0.05:
-                        gap_path = os.path.join(tmpdir, f"gap_{i:04d}.mp4")
+                        gap_path = os.path.join(tmpdir, f"gap_{seg_i:04d}.mp4")
                         self._make_black(gap_path, gap_dur, pw or 1920, ph or 1080, fps or 30, vcodec)
                         if _Path(gap_path).exists():
                             final_parts.append(gap_path)
-                final_parts.append(part_files[i])
-
+                final_parts.append(part_files[seg_i])
+            
             # Step 3: Concat
             self._sig.status.emit("Concatenating video...")
             self._sig.progress.emit(50)
-
+            
             concat_list = os.path.join(tmpdir, "concat.txt")
             with open(concat_list, "w", encoding="utf-8") as f:
                 for fp in final_parts:
-                    safe = fp.replace("\\", "/")
+                    safe = fp.replace(chr(92), "/")
                     f.write(f"file '{safe}'\n")
-
+            
             need_subtitle = subtitle and _Path(subtitle).exists()
             need_audio_mix = bool(audio_segs)
             concat_out = os.path.join(tmpdir, "concat_raw.mp4") if (need_subtitle or need_audio_mix) else output
-
+            
             cmd = [self._ffmpeg, "-y", "-hide_banner",
                    "-f", "concat", "-safe", "0", "-i", concat_list,
                    "-c", "copy", concat_out]
@@ -390,9 +519,9 @@ class ExportPanel(QWidget):
                 stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
                 self._sig.error.emit(f"Concat failed:\n{stderr[-300:]}")
                 return
-
+            
             current_video = concat_out
-
+            
             # Step 4: Mix audio
             if need_audio_mix:
                 self._sig.status.emit("Mixing audio tracks...")
@@ -401,7 +530,7 @@ class ExportPanel(QWidget):
                 ok = self._mix_audio(current_video, audio_segs, mixed, total_dur, vcodec)
                 if ok and _Path(mixed).exists():
                     current_video = mixed
-
+            
             # Step 5: Burn subtitles
             if need_subtitle:
                 self._sig.status.emit("Burning subtitles...")
@@ -411,7 +540,7 @@ class ExportPanel(QWidget):
                                         "avs_sub" + _Path(subtitle).suffix)
                 shutil.copy2(subtitle, temp_sub)
                 safe_sub = temp_sub.replace("\\", "/").replace(":", "\\:")
-
+                
                 if temp_sub.endswith(".ass"):
                     sub_vf = f"ass='{safe_sub}'"
                 else:
@@ -419,7 +548,7 @@ class ExportPanel(QWidget):
                               "force_style='FontName=Malgun Gothic,FontSize=24,"
                               "PrimaryColour=&HFFFFFF,OutlineColour=&H000000,"
                               "Outline=2,Shadow=1'")
-
+                
                 cmd = [self._ffmpeg, "-y", "-hide_banner",
                        "-i", current_video, "-vf", sub_vf,
                        "-c:v"] + list(vcodec) + [
@@ -434,7 +563,7 @@ class ExportPanel(QWidget):
                 current_video = sub_out
             elif current_video != output:
                 shutil.copy2(current_video, output)
-
+            
             # Done
             self._sig.progress.emit(100)
             if _Path(output).exists():
@@ -444,7 +573,7 @@ class ExportPanel(QWidget):
                     f"Encoder: {'NVENC GPU' if preset.get('gpu') else 'CPU (x264)'}")
             else:
                 self._sig.error.emit("Output file was not created.")
-
+            
         except Exception as e:
             logger.exception("Export failed")
             self._sig.error.emit(str(e))
@@ -502,17 +631,28 @@ class ExportPanel(QWidget):
             shutil.copy2(video_path, output)
         return True
 
-    def _make_black(self, path, duration, w, h, fps, vcodec):
+    def _make_black(self, out_path, duration, w, h, fps, vcodec):
+        """Generate a black video segment. Always uses CPU encoder for reliability."""
         cmd = [self._ffmpeg, "-y", "-hide_banner",
                "-f", "lavfi", "-i",
-               f"color=c=black:s={w}x{h}:d={duration}:r={fps}",
-               "-c:v"] + list(vcodec) + [
-               "-pix_fmt", "yuv420p", "-an", path]
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             creationflags=0x08000000)
-        p.communicate()
+               f"color=c=black:s={w}x{h}:r={fps}:d={duration}",
+               "-f", "lavfi", "-i",
+               f"anullsrc=r=44100:cl=stereo",
+               "-t", str(duration),
+               "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+               "-c:a", "aac", "-b:a", "128k",
+               "-pix_fmt", "yuv420p",
+               "-shortest",
+               out_path]
+        logger.info(f"Black gap: {' '.join(cmd)}")
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            creationflags=0x08000000)
+        _, stderr_bytes = proc.communicate()
+        if proc.returncode != 0:
+            stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            logger.error(f"Black gap failed: {stderr}")
 
-    # UI callbacks
     def _on_progress(self, v):
         self.progress.setValue(v)
 
