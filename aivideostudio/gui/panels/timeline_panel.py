@@ -10,8 +10,9 @@ from loguru import logger
 
 def _qf(name, pixel_size, weight=None):
     """Create QFont with pixel size (avoids QFont pointSize <= 0 error)."""
-    f = QFont(name)
-    f.setPixelSize(pixel_size)
+    f = QFont()
+    f.setFamily(name)
+    f.setPixelSize(max(1, pixel_size))
     if weight is not None:
         f.setWeight(weight)
     return f
@@ -298,7 +299,7 @@ class ClipWidget(QWidget):
 
     def mouseDoubleClickEvent(self, event):
         if self._alive:
-            if self._track_type == "subtitle":
+            if self._track_type == "subtitle" and self.clip_data.get("subtitle_text"):
                 # Direct inline text editing for subtitle clips
                 p = self.parent()
                 if p and hasattr(p, "_edit_subtitle_text"):
@@ -606,7 +607,15 @@ class TimelineCanvas(QWidget):
     def _edit_subtitle_text(self, cw):
         """Open dialog to edit subtitle clip text."""
         old_text = cw.clip_data.get("subtitle_text", "")
-        win = self.window()
+        # Use QApplication main window to avoid "must be top level" warning
+        from PyQt6.QtWidgets import QApplication
+        win = None
+        for w in QApplication.topLevelWidgets():
+            if hasattr(w, 'timeline_panel'):
+                win = w
+                break
+        if win is None:
+            win = self.window()
         new_text, ok = QInputDialog.getMultiLineText(
             win, "Edit Subtitle", "Subtitle text:", old_text)
         if ok and new_text != old_text:
@@ -779,9 +788,11 @@ class TimelineCanvas(QWidget):
 
     def _notify_subtitle_changed(self):
         """Refresh subtitle overlay in preview."""
-        win = self.window()
-        if win and hasattr(win, '_refresh_subtitle_overlay'):
-            win._refresh_subtitle_overlay()
+        from PyQt6.QtWidgets import QApplication
+        for w in QApplication.topLevelWidgets():
+            if hasattr(w, '_refresh_subtitle_overlay'):
+                w._refresh_subtitle_overlay()
+                return
 
     def _show_track_menu(self, track_idx, global_pos):
         """Right-click context menu on track header."""

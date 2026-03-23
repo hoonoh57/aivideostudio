@@ -32,6 +32,24 @@ from aivideostudio.gui.panels.tts_panel import TTSPanel
 from aivideostudio.gui.panels.export_panel import ExportPanel
 from aivideostudio.core.playback_engine import TimelinePlaybackEngine
 
+# Suppress harmless QFont pointSize warning from emoji rendering
+import warnings as _warnings
+from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
+
+def _qt_msg_filter(msg_type, context, message):
+    if "setPointSize" in message and "must be greater than 0" in message:
+        return  # suppress
+    # Default: print to stderr
+    if msg_type == QtMsgType.QtWarningMsg:
+        print(f"Qt Warning: {message}")
+    elif msg_type == QtMsgType.QtCriticalMsg:
+        print(f"Qt Critical: {message}")
+    elif msg_type == QtMsgType.QtFatalMsg:
+        print(f"Qt Fatal: {message}")
+
+qInstallMessageHandler(_qt_msg_filter)
+
+
 AUDIO_EXTS = {".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a", ".wma"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tiff", ".tif", ".svg"}
 SUBTITLE_EXTS = {".srt", ".ass", ".vtt"}
