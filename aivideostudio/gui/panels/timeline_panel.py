@@ -1041,6 +1041,7 @@ class TimelineCanvas(QWidget):
             return
         path = cw.clip_data.get("path", "")
         if not path:
+            logger.debug("Thumbnail skip: no path")
             return
         ext = Path(path).suffix.lower()
         image_exts = (".png", ".jpg", ".jpeg", ".bmp", ".gif",
@@ -1051,19 +1052,22 @@ class TimelineCanvas(QWidget):
             if not px.isNull():
                 cw.set_thumbnails(px, px)
                 cw._thumb_requested = True
+                logger.info(f"Thumbnail (image): {Path(path).name}")
             return
         in_pt = cw.clip_data.get("in_point", 0)
         out_pt = cw.clip_data.get("out_point",
                     in_pt + cw.clip_data.get("duration", 1))
+        ffmpeg = self._ffmpeg_path
+        logger.info(f"Thumbnail request: {Path(path).name} in={in_pt:.1f} out={out_pt:.1f} ffmpeg={ffmpeg}")
         cw._thumb_requested = True
         def on_done(start_px, end_px, w=cw):
             try:
                 if w._alive:
                     w.set_thumbnails(start_px, end_px)
-                    logger.debug(f"Thumbnails loaded for {w.clip_data.get('name','?')}")
+                    logger.info(f"Thumbnails loaded: {w.clip_data.get('name','?')} start={'OK' if start_px else 'None'} end={'OK' if end_px else 'None'}")
             except RuntimeError:
                 pass
-        _extract_thumb_pair_async(path, in_pt, out_pt, on_done, self._ffmpeg_path)
+        _extract_thumb_pair_async(path, in_pt, out_pt, on_done, ffmpeg)
 
     # ── Drag & Drop ──
     def dragEnterEvent(self, event):
