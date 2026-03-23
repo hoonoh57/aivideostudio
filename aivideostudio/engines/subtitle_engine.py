@@ -6,6 +6,52 @@ from loguru import logger
 import pysubs2
 
 
+
+def style_to_ass_tags(style: dict) -> str:
+    """Convert subtitle_style dict to ASS override tags string."""
+    if not style:
+        return ""
+    parts = []
+    if style.get("font"):
+        parts.append(r"\fn" + style["font"])
+    if style.get("size"):
+        parts.append(r"\fs" + str(style["size"]))
+    if style.get("bold"):
+        parts.append(r"\b1")
+    if style.get("italic"):
+        parts.append(r"\i1")
+    if style.get("underline"):
+        parts.append(r"\u1")
+    if style.get("font_color"):
+        # ASS uses &HBBGGRR& format
+        c = style["font_color"].lstrip("#")
+        if len(c) == 6:
+            r, g, b = c[0:2], c[2:4], c[4:6]
+            parts.append(r"\c&H" + b + g + r + "&")
+    if style.get("outline_color"):
+        c = style["outline_color"].lstrip("#")
+        if len(c) == 6:
+            r, g, b = c[0:2], c[2:4], c[4:6]
+            parts.append(r"\3c&H" + b + g + r + "&")
+    if style.get("outline_size") is not None:
+        parts.append(r"\bord" + str(style["outline_size"]))
+    if style.get("shadow") is False:
+        parts.append(r"\shad0")
+    elif style.get("shadow") is True:
+        parts.append(r"\shad1")
+    if style.get("bg_box"):
+        parts.append(r"\4a&H60&")  # semi-transparent bg
+    if style.get("alignment"):
+        parts.append(r"\an" + str(style["alignment"]))
+    # Animation tag (raw ASS)
+    anim_tag = style.get("animation_tag", "")
+    if anim_tag and anim_tag != "__TYPEWRITER__":
+        parts.append(anim_tag.replace("{", "").replace("}", ""))
+    if not parts:
+        return ""
+    return "{" + "".join(parts) + "}"
+
+
 class SubtitleEngine:
     def __init__(self, ffmpeg_path="ffmpeg"):
         self.ffmpeg_path = ffmpeg_path
@@ -72,19 +118,26 @@ class SubtitleEngine:
     def segments_to_ass(segments, output_path, fontname="Malgun Gothic",
                         fontsize=22, outline=2):
         subs = pysubs2.SSAFile()
-        style = subs.styles["Default"]
-        style.fontname = fontname
-        style.fontsize = fontsize
-        style.primarycolor = pysubs2.Color(255, 255, 255)
-        style.outlinecolor = pysubs2.Color(0, 0, 0)
-        style.outline = outline
-        style.shadow = 1
-        style.alignment = 2
+        default = subs.styles["Default"]
+        default.fontname = fontname
+        default.fontsize = fontsize
+        default.primarycolor = pysubs2.Color(255, 255, 255)
+        default.outlinecolor = pysubs2.Color(0, 0, 0)
+        default.outline = outline
+        default.shadow = 1
+        default.alignment = 2
         for seg in segments:
+            text = seg["text"]
+            # Apply per-subtitle style overrides as ASS tags
+            seg_style = seg.get("style", {})
+            if seg_style:
+                tags = style_to_ass_tags(seg_style)
+                if tags:
+                    text = tags + text
             event = pysubs2.SSAEvent(
                 start=int(seg["start"] * 1000),
                 end=int(seg["end"] * 1000),
-                text=seg["text"]
+                text=text
             )
             subs.append(event)
         subs.save(str(output_path), format_="ass")

@@ -15,6 +15,7 @@ from PyQt6.QtGui import QColor, QFont
 from loguru import logger
 
 import pysubs2
+from aivideostudio.engines.subtitle_engine import style_to_ass_tags
 
 
 class WhisperWorker(QThread):

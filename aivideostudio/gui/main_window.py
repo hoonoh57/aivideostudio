@@ -625,6 +625,7 @@ class MainWindow(QMainWindow):
                     "start": cd.get("timeline_start", 0),
                     "end": cd.get("timeline_start", 0) + cd.get("duration", 0),
                     "text": cd.get("subtitle_text", cd.get("name", "")),
+                    "style": cd.get("subtitle_style", {}),
                 })
         events.sort(key=lambda e: e["start"])
         self.preview.set_subtitle_events(events)

@@ -182,17 +182,65 @@ class PreviewPanel(QWidget):
 
     def _update_subtitle_overlay(self, tl_sec):
         text = ""
+        style = {}
         for ev in self._subtitle_events:
             if ev["start"] <= tl_sec < ev["end"]:
                 text = ev["text"]
+                style = ev.get("style", {})
                 break
         if text != self._current_sub_text:
             self._current_sub_text = text
             if text:
                 self._sub_label.setText(text)
+                self._apply_subtitle_style(style)
                 self._sub_label.show()
             else:
                 self._sub_label.hide()
+
+    def _apply_subtitle_style(self, style):
+        """Apply per-subtitle style to the overlay label."""
+        if not style:
+            # Default style
+            self._sub_label.setStyleSheet(
+                "QLabel{color:white; font-size:16px; background:rgba(0,0,0,160);"
+                "padding:4px 12px; border-radius:4px;}")
+            return
+        font_name = style.get("font", "Malgun Gothic")
+        font_size = style.get("size", 16)
+        # Scale down for preview (subtitle size is for video resolution)
+        preview_size = max(10, min(font_size, 28))
+        fc = style.get("font_color", "#ffffff")
+        oc = style.get("outline_color", "#000000")
+        bold = "bold" if style.get("bold") else "normal"
+        italic = "italic" if style.get("italic") else "normal"
+        underline = "underline" if style.get("underline") else "none"
+        bg = "rgba(0,0,0,160)" if style.get("bg_box") else "rgba(0,0,0,100)"
+        outline_px = min(style.get("outline_size", 2), 3)
+        shadow = f"1px 1px 2px {oc}" if style.get("shadow") else "none"
+        # Alignment: adjust label alignment
+        an = style.get("alignment", 2)
+        if an in (1, 4, 7):
+            align = "left"
+        elif an in (3, 6, 9):
+            align = "right"
+        else:
+            align = "center"
+        self._sub_label.setStyleSheet(
+            f"QLabel{{"
+            f"color:{fc}; font-family:'{font_name}'; font-size:{preview_size}px;"
+            f"font-weight:{bold}; font-style:{italic}; text-decoration:{underline};"
+            f"background:{bg}; padding:4px 12px; border-radius:4px;"
+            f"text-align:{align};"
+            f"}}")
+        if an in (1, 4, 7):
+            from PyQt6.QtCore import Qt as QtC
+            self._sub_label.setAlignment(QtC.AlignmentFlag.AlignLeft)
+        elif an in (3, 6, 9):
+            from PyQt6.QtCore import Qt as QtC
+            self._sub_label.setAlignment(QtC.AlignmentFlag.AlignRight)
+        else:
+            from PyQt6.QtCore import Qt as QtC
+            self._sub_label.setAlignment(QtC.AlignmentFlag.AlignCenter)
 
     # ── engine binding ──────────────────────────────────────────
     def set_engine(self, engine):
