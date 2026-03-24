@@ -1,11 +1,11 @@
 import math
 from pathlib import Path
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QButtonGroup, QToolButton, QMenu, QInputDialog
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint
-from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush
+from PySide6.QtCore import Qt, Signal, QRect, QPoint
+from PySide6.QtGui import QPainter, QColor, QFont, QPen, QBrush
 from loguru import logger
 from aivideostudio.engines.thumbnail_engine import FilmstripWorkerThread
 import os
@@ -66,10 +66,10 @@ _TRACK_ICONS = {"video": "V", "audio": "A", "subtitle": "S"}
 
 
 class ClipWidget(QWidget):
-    clicked = pyqtSignal(object, object)
-    double_clicked = pyqtSignal(object)
-    moved = pyqtSignal(object)
-    trimmed = pyqtSignal(object)
+    clicked = Signal(object, object)
+    double_clicked = Signal(object)
+    moved = Signal(object)
+    trimmed = Signal(object)
 
     def __init__(self, clip_data, pps, track_type="video", parent=None):
         super().__init__(parent)
@@ -209,7 +209,7 @@ class ClipWidget(QWidget):
             x_draw = 2
             clip_w = r.width() - 4
             fi = 0
-            from PyQt6.QtCore import QRect, QRectF
+            from PySide6.QtCore import QRect, QRectF
             while x_draw < clip_w and fi < self._filmstrip_count:
                 src_rect = QRect(fi * single_w, 0, single_w, single_h)
                 dst_rect = QRectF(x_draw, 2, min(frame_w, clip_w - x_draw), frame_h)
@@ -500,11 +500,11 @@ class ClipWidget(QWidget):
             if p and hasattr(p, "_edit_pip_settings"):
                 p._edit_pip_settings(self)
 class TimelineCanvas(QWidget):
-    playhead_moved = pyqtSignal(float)
-    clip_selected = pyqtSignal(dict)
-    clip_double_clicked = pyqtSignal(dict)
-    seek_requested = pyqtSignal(float)
-    drop_requested = pyqtSignal(str, int, float)
+    playhead_moved = Signal(float)
+    clip_selected = Signal(dict)
+    clip_double_clicked = Signal(dict)
+    seek_requested = Signal(float)
+    drop_requested = Signal(str, int, float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -834,7 +834,7 @@ class TimelineCanvas(QWidget):
     def _edit_pip_settings(self, cw):
         """Open PIP settings dialog for overlay video clips."""
         pip = cw.clip_data.get("pip", {})
-        from PyQt6.QtWidgets import (QDialog, QFormLayout, QSpinBox,
+        from PySide6.QtWidgets import (QDialog, QFormLayout, QSpinBox,
                                      QDoubleSpinBox, QDialogButtonBox)
 
         dlg = QDialog(self.window())
@@ -895,7 +895,7 @@ class TimelineCanvas(QWidget):
 
     def _edit_subtitle_text(self, cw):
         from aivideostudio.gui.dialogs.subtitle_edit_dialog import SubtitleEditDialog
-        from PyQt6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         win = None
         for w in QApplication.topLevelWidgets():
             if hasattr(w, 'timeline_panel'):
@@ -1183,7 +1183,7 @@ class TimelineCanvas(QWidget):
         logger.info(f"Merged: '{t1[:15]}' + '{t2[:15]}'")
 
     def _notify_subtitle_changed(self):
-        from PyQt6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         for w in QApplication.topLevelWidgets():
             if hasattr(w, '_refresh_subtitle_overlay'):
                 w._refresh_subtitle_overlay()
@@ -1255,7 +1255,7 @@ class TimelineCanvas(QWidget):
             return
         ext = os.path.splitext(path)[1].lower()
         if ext in ('.png','.jpg','.jpeg','.bmp','.gif','.tiff','.tif','.webp','.svg'):
-            from PyQt6.QtGui import QPixmap
+            from PySide6.QtGui import QPixmap
             pm = QPixmap(path)
             if not pm.isNull():
                 cw.set_filmstrip(pm, 1)
@@ -1287,7 +1287,7 @@ class TimelineCanvas(QWidget):
         cw._filmstrip_requested = True
 
     def _on_filmstrip_ready(self, clip_id, sprite_path, num_frames):
-        from PyQt6.QtGui import QPixmap
+        from PySide6.QtGui import QPixmap
         pm = QPixmap(sprite_path)
         if pm.isNull():
             logger.warning(f'Filmstrip load failed: {sprite_path}')
@@ -1661,9 +1661,9 @@ class TimelineCanvas(QWidget):
 
 
 class TimelinePanel(QWidget):
-    clip_selected = pyqtSignal(dict)
-    playhead_changed = pyqtSignal(float)
-    seek_requested = pyqtSignal(float)
+    clip_selected = Signal(dict)
+    playhead_changed = Signal(float)
+    seek_requested = Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)

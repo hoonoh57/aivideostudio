@@ -1,4 +1,4 @@
-from PyQt6.QtGui import QAction
+from PySide6.QtGui import QAction
 
 
 def create_menu_bar(window):

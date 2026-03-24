@@ -13,7 +13,7 @@ import os, subprocess, tempfile, threading, hashlib
 from pathlib import Path
 from loguru import logger
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal
 
 # ── thread-safe cache ──────────────────────────────────────────────
 _cache: dict[str, str] = {}
@@ -111,7 +111,7 @@ def extract_thumbnail_sync(
 
 class FilmstripWorkerThread(QThread):
     """Background thread – emits (clip_id, sprite_path, num_frames)."""
-    filmstrip_ready = pyqtSignal(int, str, int)
+    filmstrip_ready = Signal(int, str, int)
 
     def __init__(self, clip_id, video_path, duration, num_frames, frame_height, ffmpeg):
         super().__init__()

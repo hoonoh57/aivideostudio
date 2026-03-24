@@ -2,14 +2,14 @@
 SubtitleEditDialog - Professional subtitle editing dialog.
 Benchmarked: DaVinci Resolve 20, Premiere Pro, CapCut.
 """
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QPushButton, QPlainTextEdit, QFontComboBox, QSpinBox,
     QComboBox, QGroupBox, QCheckBox, QFrame,
     QColorDialog, QDialogButtonBox, QSizePolicy, QWidget
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush
 
 
 # ASS \an alignment (numpad layout)
@@ -33,7 +33,7 @@ ANIMATION_PRESETS = [
 
 class _ColorButton(QPushButton):
     """Button showing its color as background."""
-    color_changed = pyqtSignal(QColor)
+    color_changed = Signal(QColor)
 
     def __init__(self, initial: QColor, label: str, parent=None):
         super().__init__(label, parent)
@@ -69,7 +69,7 @@ class _ColorButton(QPushButton):
 
 class _AlignGrid(QWidget):
     """3x3 grid for ASS alignment (numpad layout)."""
-    alignment_changed = pyqtSignal(int)
+    alignment_changed = Signal(int)
 
     def __init__(self, current=2, parent=None):
         super().__init__(parent)
@@ -633,7 +633,7 @@ class SubtitleEditDialog(QDialog):
 
     def _on_reset_all(self):
         """Reset ALL subtitle clips to default (with confirmation)."""
-        from PyQt6.QtWidgets import QMessageBox
+        from PySide6.QtWidgets import QMessageBox
         reply = QMessageBox.warning(
             self, "Reset ALL to Default",
             "This will reset ALL subtitle clips to the default style.\n"

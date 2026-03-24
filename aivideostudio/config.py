@@ -26,7 +26,19 @@ class Config:
         found = shutil.which(name)
         if found:
             return found
-        for base in ["D:/ffmpeg/bin", "C:/ffmpeg/bin"]:
+        # 1) Check install root (portable: <root>/ffmpeg/bin/)
+        app_root = Path(__file__).resolve().parent.parent
+        portable_paths = [
+            app_root / "ffmpeg" / "bin",
+            app_root.parent / "ffmpeg" / "bin",
+        ]
+        for base in portable_paths:
+            p = base / exe_name
+            if p.exists():
+                logger.info(f"Found {name} (portable): {p}")
+                return str(p)
+        # 2) Check common system paths
+        for base in ["C:/ffmpeg/bin", "D:/ffmpeg/bin"]:
             p = Path(base) / exe_name
             if p.exists():
                 return str(p)

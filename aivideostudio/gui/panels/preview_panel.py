@@ -3,11 +3,11 @@ Supports video + audio track playback + subtitle overlay + speed control."""
 import os, sys, time as _time, tempfile
 from pathlib import Path as _Path
 
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                               QPushButton, QSlider, QLabel, QSizePolicy,
                               QComboBox)
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QFont
 from loguru import logger
 
 _root = str(_Path(__file__).resolve().parents[3])
@@ -43,7 +43,7 @@ SPEED_VALUES = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0]
 class PreviewPanel(QWidget):
     """Video preview with audio track + subtitle overlay + speed control."""
 
-    position_changed = pyqtSignal(float)
+    position_changed = Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -246,7 +246,7 @@ class PreviewPanel(QWidget):
 
     def _apply_subtitle_style(self, style):
         """Apply per-subtitle style to the overlay QLabel with full rendering."""
-        from PyQt6.QtCore import Qt as _Qt
+        from PySide6.QtCore import Qt as _Qt
         if not style:
             self._sub_label.setStyleSheet(
                 "QLabel{color:white; font-size:15px; background:rgba(0,0,0,160);"

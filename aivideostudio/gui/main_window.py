@@ -1,11 +1,11 @@
 from pathlib import Path
 import json
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QMainWindow, QDockWidget, QStatusBar, QLabel, QTabWidget,
     QFileDialog, QMessageBox
 )
-from PyQt6.QtCore import Qt, QSettings, QThread, pyqtSignal
-from PyQt6.QtGui import QKeySequence, QShortcut, QAction
+from PySide6.QtCore import Qt, QSettings, QThread, Signal
+from PySide6.QtGui import QKeySequence, QShortcut, QAction
 from loguru import logger
 
 try:
@@ -35,7 +35,7 @@ from aivideostudio.engines.waveform_engine import generate_peaks, get_cached_pea
 
 # Suppress harmless QFont pointSize warning from emoji rendering
 import warnings as _warnings
-from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
+from PySide6.QtCore import qInstallMessageHandler, QtMsgType
 
 def _qt_msg_filter(msg_type, context, message):
     if "setPointSize" in message and "must be greater than 0" in message:
@@ -59,7 +59,7 @@ AVS_FILTER = "AIVideoStudio Project (*.avs);;All Files (*.*)"
 
 
 class ThumbnailWorker(QThread):
-    done = pyqtSignal(str, str)
+    done = Signal(str, str)
     def __init__(self, engine, path):
         super().__init__()
         self.engine = engine
@@ -72,7 +72,7 @@ class ThumbnailWorker(QThread):
 
 class ImportWorker(QThread):
     """Async file import: probe media info in background thread."""
-    done = pyqtSignal(str, object)  # file_path, probe_info (or None)
+    done = Signal(str, object)  # file_path, probe_info (or None)
 
     def __init__(self, file_path, ffprobe_path):
         super().__init__()
@@ -93,7 +93,7 @@ class ImportWorker(QThread):
 
 class WaveformWorker(QThread):
     """Generate waveform peaks in background."""
-    done = pyqtSignal(str, object)  # file_path, peaks list
+    done = Signal(str, object)  # file_path, peaks list
 
     def __init__(self, file_path, ffmpeg_path):
         super().__init__()
@@ -751,7 +751,7 @@ class MainWindow(QMainWindow):
                 })
         events.sort(key=lambda e: e["start"])
         if not events:
-            from PyQt6.QtWidgets import QMessageBox
+            from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Export", "No subtitle clips on timeline.")
             return
         path, _ = QFileDialog.getSaveFileName(

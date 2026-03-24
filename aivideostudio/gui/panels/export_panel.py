@@ -7,20 +7,20 @@ import tempfile
 import threading
 from pathlib import Path as _Path
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QCheckBox, QPushButton, QProgressBar, QFileDialog, QMessageBox,
     QGroupBox
 )
-from PyQt6.QtCore import pyqtSignal, QObject
+from PySide6.QtCore import Signal, QObject
 from loguru import logger
 
 
 class ExportSignals(QObject):
-    progress = pyqtSignal(int)
-    status = pyqtSignal(str)
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
+    progress = Signal(int)
+    status = Signal(str)
+    finished = Signal(str)
+    error = Signal(str)
 
 
 PRESETS = {

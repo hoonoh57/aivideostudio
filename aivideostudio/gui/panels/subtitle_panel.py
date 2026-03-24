@@ -4,14 +4,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QPushButton, QProgressBar, QTableWidget, QTableWidgetItem,
     QHeaderView, QGroupBox, QSpinBox, QColorDialog, QFontComboBox,
     QAbstractItemView, QMessageBox, QFileDialog
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QColor, QFont
 from loguru import logger
 
 import pysubs2
@@ -19,9 +19,9 @@ from aivideostudio.engines.subtitle_engine import style_to_ass_tags
 
 
 class WhisperWorker(QThread):
-    progress = pyqtSignal(str)
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
+    progress = Signal(str)
+    finished = Signal(list)
+    error = Signal(str)
 
     def __init__(self, engine, video_path, language, model_size):
         super().__init__()
@@ -56,7 +56,7 @@ class WhisperWorker(QThread):
 
 
 class SubtitlePanel(QWidget):
-    subtitle_ready = pyqtSignal(str)
+    subtitle_ready = Signal(str)
 
     def __init__(self, engine, parent=None):
         super().__init__(parent)

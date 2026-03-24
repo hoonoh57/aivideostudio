@@ -1,6 +1,6 @@
 """Global keyboard shortcuts — deferred binding."""
-from PyQt6.QtGui import QKeySequence, QShortcut
-from PyQt6.QtCore import QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QTimer
 from loguru import logger
 
 

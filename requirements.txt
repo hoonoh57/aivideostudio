@@ -1,0 +1,11 @@
+# AIVideoStudio dependencies (LGPL/MIT/BSD compatible)
+PySide6>=6.6
+loguru>=0.7
+appdirs>=1.4
+Pillow>=10.0
+numpy>=1.24
+python-mpv>=1.0
+pysubs2>=1.7
+requests>=2.31
+pysrt>=1.1
+# Note: pysrt is GPL - replace with self-built SRT parser before commercial release

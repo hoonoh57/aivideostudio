@@ -1,7 +1,7 @@
 """Toolbar with icons — benchmarked from DaVinci Resolve / Premiere Pro style."""
-from PyQt6.QtWidgets import QToolBar, QToolButton, QWidget, QSizePolicy
-from PyQt6.QtGui import QAction, QFont, QIcon
-from PyQt6.QtCore import Qt, QSize
+from PySide6.QtWidgets import QToolBar, QToolButton, QWidget, QSizePolicy
+from PySide6.QtGui import QAction, QFont, QIcon
+from PySide6.QtCore import Qt, QSize
 
 
 def create_toolbar(window):
@@ -83,7 +83,7 @@ def create_toolbar(window):
             btns['import'].clicked.connect(asset._on_import)
 
     # Defer connection until after __init__
-    from PyQt6.QtCore import QTimer
+    from PySide6.QtCore import QTimer
     QTimer.singleShot(100, connect_later)
 
     window.addToolBar(tb)

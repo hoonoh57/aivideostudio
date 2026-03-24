@@ -68,7 +68,7 @@ class SoVITSEngine:
     name = "GPT-SoVITS"
 
     def __init__(self, api_url="http://127.0.0.1:9880",
-                 ref_audio="D:/GPT-SoVITS/ref_audio.wav",
+                 ref_audio="",  # Set via TTS panel or config
                  ref_text="",
                  ref_lang="ko"):
         self.api_url = api_url.rstrip("/")
@@ -106,7 +106,7 @@ class SoVITSEngine:
         except requests.ConnectionError:
             raise ConnectionError(
                 "GPT-SoVITS server not running! Start it first:\n"
-                "  cd /d D:\\GPT-SoVITS\n"
+                "  cd /d <GPT-SoVITS install path>\n"
                 "  .\\runtime\\python api_v2.py -a 127.0.0.1 -p 9880"
             )
 

@@ -1,17 +1,17 @@
 import os
 from pathlib import Path
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox,
     QTextEdit, QLabel, QFileDialog, QProgressBar, QGroupBox,
     QSlider, QLineEdit, QMessageBox
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PySide6.QtCore import Qt, QThread, Signal
 from loguru import logger
 
 
 class TTSWorker(QThread):
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
+    finished = Signal(str)
+    error = Signal(str)
 
     def __init__(self, engine, text, output_path, **kwargs):
         super().__init__()
@@ -29,7 +29,7 @@ class TTSWorker(QThread):
 
 
 class TTSPanel(QWidget):
-    audio_ready = pyqtSignal(str)
+    audio_ready = Signal(str)
 
     def __init__(self, tts_engine, parent=None):
         super().__init__(parent)
@@ -103,7 +103,7 @@ class TTSPanel(QWidget):
         # Reference audio
         row_ref = QHBoxLayout()
         row_ref.addWidget(QLabel("Ref Audio:"))
-        self.txt_ref_audio = QLineEdit("D:/GPT-SoVITS/ref_audio.wav")
+        self.txt_ref_audio = QLineEdit("")  # User sets via browse
         row_ref.addWidget(self.txt_ref_audio)
         self.btn_browse_ref = QPushButton("...")
         self.btn_browse_ref.setMaximumWidth(30)
@@ -207,13 +207,13 @@ class TTSPanel(QWidget):
             QMessageBox.warning(self, "GPT-SoVITS",
                 "Cannot connect to GPT-SoVITS server.\n\n"
                 "Start the server first:\n"
-                "  cd /d D:\\GPT-SoVITS\n"
+                "  cd /d <GPT-SoVITS install path>\n"
                 "  .\\runtime\\python api_v2.py -a 127.0.0.1 -p 9880")
 
     def _browse_ref_audio(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Select Reference Audio",
-            "D:/GPT-SoVITS",
+            str(Path.home()),
             "Audio Files (*.wav *.mp3 *.flac)")
         if path:
             self.txt_ref_audio.setText(path)

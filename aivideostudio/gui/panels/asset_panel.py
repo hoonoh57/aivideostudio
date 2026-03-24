@@ -1,10 +1,10 @@
 from pathlib import Path
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QFileDialog, QLabel, QAbstractItemView
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QMimeData, QPoint
-from PyQt6.QtGui import QIcon, QPixmap, QDrag
+from PySide6.QtCore import Qt, Signal, QSize, QMimeData, QPoint
+from PySide6.QtGui import QIcon, QPixmap, QDrag
 from loguru import logger
 
 SUPPORTED = {
@@ -59,8 +59,8 @@ class DraggableListWidget(QListWidget):
 
 
 class AssetPanel(QWidget):
-    file_imported = pyqtSignal(str)
-    file_double_clicked = pyqtSignal(str)
+    file_imported = Signal(str)
+    file_double_clicked = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
