@@ -257,6 +257,9 @@ class MainWindow(QMainWindow):
                 # Save subtitle style (font, color, animation, etc.)
                 if cd.get("subtitle_style"):
                     clip_dict["subtitle_style"] = dict(cd["subtitle_style"])
+                # Save style lock state
+                if cd.get("style_locked"):
+                    clip_dict["style_locked"] = True
                 # Save PIP settings
                 if cd.get("pip"):
                     clip_dict["pip"] = dict(cd["pip"])
