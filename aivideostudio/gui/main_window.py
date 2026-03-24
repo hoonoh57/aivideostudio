@@ -292,6 +292,18 @@ class MainWindow(QMainWindow):
                 path += ".avs"
             self._do_save(path)
 
+    def _load_default_subtitle_style(self):
+        """Load user-saved default subtitle style."""
+        from appdirs import user_data_dir
+        p = Path(user_data_dir("AIVideoStudio")) / "default_subtitle_style.json"
+        if p.exists():
+            try:
+                import json as _json
+                return _json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return None
+
     def _do_save(self, path):
         try:
             data = self._serialize_project()

@@ -230,6 +230,17 @@ class ClipWidget(QWidget):
         tr = r.adjusted(HANDLE_WIDTH + 2 + _thumb_left_w, 1,
                         -HANDLE_WIDTH - 2 - _thumb_right_w, -1)
         p.drawText(tr, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+
+        # ── Style badge for subtitle clips ──
+        if self._track_type == "subtitle" and self.clip_data.get("style_locked"):
+            badge_text = "\U0001f3a8"  # 🔒
+            badge_font = p.font()
+            badge_font.setPixelSize(max(10, r.height() - 6))
+            p.setFont(badge_font)
+            p.setPen(QPen(QColor(255, 255, 255, 200)))
+            p.drawText(r.right() - 18, r.y() + 2, 16, r.height() - 4,
+                       Qt.AlignmentFlag.AlignCenter, badge_text)
+
         p.end()
 
     def _hit_handle(self, pos):
@@ -902,7 +913,18 @@ class TimelineCanvas(QWidget):
                 if other is cw or not other._alive: continue
                 if other.clip_data.get("timeline_start", 0) > cw_start:
                     has_next = True; break
-        dlg = SubtitleEditDialog(cw.clip_data, has_next=has_next, parent=win)
+        # Collect existing styles from all subtitle clips
+        existing_styles = []
+        for track in self.tracks:
+            if track.get("type") != "subtitle":
+                continue
+            for other_cw in track["clips"]:
+                try:
+                    if not other_cw._alive: continue
+                except (RuntimeError, AttributeError): continue
+                existing_styles.append(dict(other_cw.clip_data.get("subtitle_style", {})))
+        dlg = SubtitleEditDialog(cw.clip_data, has_next=has_next,
+                                 existing_styles=existing_styles, parent=win)
         if dlg.exec() != SubtitleEditDialog.DialogCode.Accepted:
             return
         action = dlg.result_action
@@ -911,18 +933,20 @@ class TimelineCanvas(QWidget):
             old_text = cw.clip_data.get("subtitle_text", "")
             old_name = cw.clip_data.get("name", "")
             old_style = dict(cw.clip_data.get("subtitle_style", {}))
+            old_locked = cw.clip_data.get("style_locked", False)
             new_text = data["text"]
             new_style = data["style"]
             cw.clip_data["subtitle_text"] = new_text
             cw.clip_data["name"] = new_text[:30] + ("..." if len(new_text) > 30 else "")
             cw.clip_data["subtitle_style"] = new_style
+            cw.clip_data["style_locked"] = data.get("locked", False)
             cw.update()
             self._notify_subtitle_changed()
             if self._undo_manager:
                 cid = getattr(cw, '_clip_id', -1)
                 cv = self
-                _ot, _on, _os = old_text, old_name, old_style
-                _nt, _nn, _ns = new_text, cw.clip_data["name"], dict(new_style)
+                _ot, _on, _os, _ol = old_text, old_name, old_style, old_locked
+                _nt, _nn, _ns, _nl = new_text, cw.clip_data["name"], dict(new_style), data.get("locked", False)
                 def undo_edit():
                     for t in cv.tracks:
                         for c in t["clips"]:
@@ -933,6 +957,7 @@ class TimelineCanvas(QWidget):
                                 c.clip_data["subtitle_text"] = _ot
                                 c.clip_data["name"] = _on
                                 c.clip_data["subtitle_style"] = dict(_os)
+                                c.clip_data["style_locked"] = _ol
                                 c.update(); cv._notify_subtitle_changed(); return
                 def redo_edit():
                     for t in cv.tracks:
@@ -944,8 +969,67 @@ class TimelineCanvas(QWidget):
                                 c.clip_data["subtitle_text"] = _nt
                                 c.clip_data["name"] = _nn
                                 c.clip_data["subtitle_style"] = dict(_ns)
+                                c.clip_data["style_locked"] = _nl
                                 c.update(); cv._notify_subtitle_changed(); return
                 self._undo_manager.push("Edit subtitle", undo_edit, redo_edit)
+        elif action == "reset_all":
+            # Reset ALL subtitle clips to default (skip locked)
+            new_text = data["text"]
+            default_style = data["style"]
+            locked_flag = data.get("locked", False)
+            # Save lock state for current clip
+            cw.clip_data["style_locked"] = locked_flag
+            if not locked_flag:
+                cw.clip_data["subtitle_text"] = new_text
+                cw.clip_data["name"] = new_text[:30] + ("..." if len(new_text) > 30 else "")
+                cw.clip_data["subtitle_style"] = dict(default_style)
+                cw.update()
+            count = 0
+            for track in self.tracks:
+                if track.get("type") != "subtitle":
+                    continue
+                for other_cw in track["clips"]:
+                    if other_cw is cw:
+                        continue
+                    try:
+                        if not other_cw._alive: continue
+                    except (RuntimeError, AttributeError): continue
+                    if other_cw.clip_data.get("style_locked", False):
+                        continue
+                    other_cw.clip_data["subtitle_style"] = dict(default_style)
+                    if "style_locked" in other_cw.clip_data:
+                        del other_cw.clip_data["style_locked"]
+                    other_cw.update()
+                    count += 1
+            rcount = count + (0 if locked_flag else 1)
+            print(f"Reset {rcount} subtitle clips to default (locked clips preserved)")
+            self._notify_subtitle_changed()
+
+        elif action == "apply_style_all":
+            # Apply style to current clip
+            new_text = data["text"]
+            new_style = data["style"]
+            cw.clip_data["subtitle_text"] = new_text
+            cw.clip_data["name"] = new_text[:30] + ("..." if len(new_text) > 30 else "")
+            cw.clip_data["subtitle_style"] = new_style
+            cw.update()
+            # Apply style to ALL subtitle clips on ALL subtitle tracks
+            count = 0
+            for track in self.tracks:
+                if track.get("type") != "subtitle":
+                    continue
+                for other_cw in track["clips"]:
+                    if other_cw is cw:
+                        continue
+                    try:
+                        if not other_cw._alive: continue
+                    except (RuntimeError, AttributeError): continue
+                    other_cw.clip_data["subtitle_style"] = dict(new_style)
+                    other_cw.update()
+                    count += 1
+            from loguru import logger
+            logger.info(f"Applied style to {count + 1} subtitle clips (all)")
+            self._notify_subtitle_changed()
         elif action == "split":
             self._split_subtitle_clip(cw, data)
         elif action == "merge":

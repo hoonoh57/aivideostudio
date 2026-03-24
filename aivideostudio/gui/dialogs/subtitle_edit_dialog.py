@@ -186,15 +186,17 @@ class SubtitleEditDialog(QDialog):
     Phase 3: 9-point alignment
     Phase 4: Animation presets
     """
-    def __init__(self, clip_data: dict, has_next: bool = False, parent=None):
+    def __init__(self, clip_data: dict, has_next: bool = False,
+                 existing_styles: list = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Edit Subtitle")
         self.setMinimumSize(580, 680)
         self.resize(620, 740)
         self._clip_data = dict(clip_data)
         self._has_next = has_next
+        self._existing_styles = existing_styles or []
         self.result_data = None
-        self.result_action = None   # "edit" | "split" | "merge"
+        self.result_action = None   # "edit" | "split" | "merge" | "apply_style_all"
         self._build_ui()
         self._load_from_clip()
         self._connect_signals()
@@ -329,6 +331,47 @@ class SubtitleEditDialog(QDialog):
         lay_pv.addWidget(self.preview)
         main.addWidget(grp_prev)
 
+        # ── Reset buttons ──
+        row_reset = QHBoxLayout()
+
+        # --- Lock checkbox ---
+        self.chk_lock = QCheckBox("\U0001f512 Lock this clip\u0027s style")
+        self.chk_lock.setToolTip(
+            "When locked, Reset ALL to Default will skip this clip.\n"
+            "Use this to protect individually styled subtitles.")
+        self.chk_lock.setStyleSheet("color:#ffab00; font-size:12px;")
+        if self._clip_data and self._clip_data.get("style_locked", False):
+            self.chk_lock.setChecked(True)
+        row_reset.addWidget(self.chk_lock)
+
+        self.btn_reset_all = QPushButton("\u21ba  Reset ALL to Default")
+        self.btn_reset_all.setToolTip(
+            "Reset ALL subtitle clips to default style.\n"
+            "Locked clips will be preserved.")
+        self.btn_reset_all.setStyleSheet(
+            "QPushButton{background:#c62828;color:white;padding:6px 12px;"
+            "font-weight:bold;border-radius:4px;}"
+            "QPushButton:hover{background:#e53935;}")
+        self.btn_reset_all.clicked.connect(self._on_reset_all)
+        row_reset.addWidget(self.btn_reset_all)
+        self.btn_save_default = QPushButton("\u2b50  Save as Default")
+        self.btn_save_default.setToolTip(
+            "Save current style as default for all new subtitles.\n"
+            "New projects will use this style automatically.")
+        self.btn_save_default.setStyleSheet(
+            "QPushButton{background:#1565c0;color:white;padding:6px 12px;"
+            "border-radius:3px;}"
+            "QPushButton:hover{background:#1976d2;}")
+        self.btn_save_default.clicked.connect(self._on_save_default)
+        row_reset.addWidget(self.btn_save_default)
+        row_reset.addStretch()
+        main.addLayout(row_reset)
+
+        # ── Apply scope ──
+        row_scope = QHBoxLayout()
+        row_scope.addStretch()
+        main.addLayout(row_scope)
+
         # ── OK / Cancel ──
         bbox = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -344,8 +387,10 @@ class SubtitleEditDialog(QDialog):
         dur = cd.get("duration", 0)
         self.lbl_time.setText(
             f"Start: {start:.2f}s  |  End: {(start+dur):.2f}s  |  Duration: {dur:.2f}s")
-        # Load per-subtitle style overrides
+        # Load per-subtitle style overrides (fallback to user default)
         style = cd.get("subtitle_style", {})
+        if not style:
+            style = self._get_default_style()
         if style.get("font"):
             self.font_combo.setCurrentFont(QFont(style["font"]))
         if style.get("size"):
@@ -450,6 +495,7 @@ class SubtitleEditDialog(QDialog):
         self.result_data = {
             "text": self.text_edit.toPlainText().strip(),
             "style": self._collect_style(),
+            "locked": self.chk_lock.isChecked(),
         }
         self.accept()
 
@@ -472,6 +518,7 @@ class SubtitleEditDialog(QDialog):
             "text_after": text_after,
             "ratio": ratio,
             "style": self._collect_style(),
+            "locked": self.chk_lock.isChecked(),
         }
         self.accept()
 
@@ -480,5 +527,127 @@ class SubtitleEditDialog(QDialog):
         self.result_data = {
             "text": self.text_edit.toPlainText().strip(),
             "style": self._collect_style(),
+            "locked": self.chk_lock.isChecked(),
+        }
+        self.accept()
+
+    def _check_multiple_styles(self):
+        """Check if existing subtitle clips have 2+ different styles."""
+        if not self._existing_styles:
+            return False
+        unique = set()
+        for s in self._existing_styles:
+            if s:
+                key = tuple(sorted(s.items()))
+                unique.add(key)
+        return len(unique) >= 2
+
+    def _on_apply_all(self):
+        """Apply style to all subtitles (text unchanged per clip)."""
+        self.result_action = "apply_style_all"
+        self.result_data = {
+            "text": self.text_edit.toPlainText().strip(),
+            "style": self._collect_style(),
+        }
+        self.accept()
+
+    @staticmethod
+    def _builtin_default_style():
+        """Return hardcoded factory default."""
+        return {
+            "font": "Malgun Gothic",
+            "size": 22,
+            "bold": False,
+            "italic": False,
+            "underline": False,
+            "font_color": "#ffffff",
+            "outline_color": "#000000",
+            "outline_size": 2,
+            "shadow": True,
+            "bg_box": False,
+            "bg_color": "#000000",
+            "alignment": 2,
+            "animation": "None",
+            "animation_tag": "",
+        }
+
+    @staticmethod
+    def _default_style_path():
+        """Path to user-saved default style file."""
+        from appdirs import user_data_dir
+        from pathlib import Path as _P
+        return _P(user_data_dir("AIVideoStudio")) / "default_subtitle_style.json"
+
+    def _get_default_style(self):
+        """Return user-saved default style, or factory default."""
+        import json as _json
+        p = self._default_style_path()
+        if p.exists():
+            try:
+                return _json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return self._builtin_default_style()
+
+    def _on_save_default(self):
+        """Save current style as user default."""
+        import json as _json
+        style = self._collect_style()
+        p = self._default_style_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(_json.dumps(style, indent=2, ensure_ascii=False), encoding="utf-8")
+        self.btn_save_default.setText("\u2b50  Saved!")
+        self.btn_save_default.setStyleSheet(
+            "QPushButton{background:#2e7d32;color:white;padding:6px 12px;"
+            "border-radius:3px;}")
+        from loguru import logger
+        logger.info(f"Default subtitle style saved to {p}")
+
+    def _apply_style_to_ui(self, style):
+        """Apply a style dict to all UI controls."""
+        self.font_combo.setCurrentFont(QFont(style.get("font", "Malgun Gothic")))
+        self.spin_size.setValue(style.get("size", 22))
+        self.chk_bold.setChecked(style.get("bold", False))
+        self.chk_italic.setChecked(style.get("italic", False))
+        self.chk_underline.setChecked(style.get("underline", False))
+        self.btn_font_color.color = QColor(style.get("font_color", "#ffffff"))
+        self.btn_outline_color.color = QColor(style.get("outline_color", "#000000"))
+        self.spin_outline.setValue(style.get("outline_size", 2))
+        self.chk_shadow.setChecked(style.get("shadow", True))
+        self.chk_bg_box.setChecked(style.get("bg_box", False))
+        self.btn_bg_color.setEnabled(style.get("bg_box", False))
+        self.btn_bg_color.color = QColor(style.get("bg_color", "#000000"))
+        self.align_grid.alignment = style.get("alignment", 2)
+        anim_name = style.get("animation", "None")
+        for i, (name, _) in enumerate(ANIMATION_PRESETS):
+            if name == anim_name:
+                self.combo_anim.setCurrentIndex(i)
+                break
+        else:
+            self.combo_anim.setCurrentIndex(0)
+        self._refresh_preview()
+
+    def _on_reset_default(self):
+        """Reset current clip style to defaults."""
+        self._apply_style_to_ui(self._get_default_style())
+
+    def _on_reset_all(self):
+        """Reset ALL subtitle clips to default (with confirmation)."""
+        from PyQt6.QtWidgets import QMessageBox
+        reply = QMessageBox.warning(
+            self, "Reset ALL to Default",
+            "This will reset ALL subtitle clips to the default style.\n"
+            "Locked clips (\U0001f512) will be preserved.\n\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.result_action = "reset_all"
+        self.result_data = {
+            "text": self.text_edit.toPlainText().strip(),
+            "style": self._get_default_style(),
+            "locked": self.chk_lock.isChecked(),
         }
         self.accept()
